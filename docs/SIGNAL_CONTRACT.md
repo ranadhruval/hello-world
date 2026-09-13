@@ -1,9 +1,15 @@
-# Market Signal Contract v0.2
+# Market Signal Contract v0.3
 
 **For:** the team/agent building the insights generation engine
 **From:** the team building the personalisation and delivery layer
-**Status:** revised after your first handoff. Rulings and rationale in
-`SIGNAL_CONTRACT_REPLY.md`; this file is the source of truth where the two differ.
+**Status:** settled. Rulings and rationale in `SIGNAL_CONTRACT_REPLY.md`; this file
+is the source of truth where the two differ.
+
+**Changed in v0.3:** `market.gap` withdrawal made unambiguous — the reply's A7 row
+contradicted §4.1 and A7 is now off (§4.1) · coverage documented from the engine
+side, and made user-facing (§6.5) · `event_at` from source publication time
+promoted to required for news (§4.2) · `evidence` noted as likely already existing
+upstream (§3).
 
 **Changed in v0.2:** sentiment and rank accepted as advisory (§4.2) · ISIN demoted
 to optional, exchange+segment+internal id now required (§3) · push no longer
@@ -98,7 +104,7 @@ Every signal, regardless of kind, has this shape:
 
 ```jsonc
 {
-  "schema_version": "0.1",
+  "schema_version": "0.3",
   "signal_id":      "uuid",            // unique per delivery
   "source_event_id": "bse:ann:1234567", // STABLE per real-world event; dedupe key
   "source":         "bse_announcements",
@@ -108,10 +114,11 @@ Every signal, regardless of kind, has this shape:
   "observed_at":    "2026-09-15T11:05:41+05:30",
 
   "entity": {
-    "isin":           "INE280A01028",   // preferred identity, when it exists
-    "exchange":       "NSE",            // NSE | BSE | MCX
-    "segment":        "CASH",           // CASH | FNO | COMMODITY | INDEX
-    "trading_symbol": "TITAN"
+    "entity_id":      "GCID12345",      // your stable internal id — REQUIRED
+    "exchange":       "NSE",            // NSE | BSE | MCX — REQUIRED
+    "segment":        "CASH",           // CASH | FNO | COMMODITY — REQUIRED
+    "nse_symbol":     "TITAN",
+    "bse_code":       "500114"          // both carried for dual-listed names
   },
 
   "payload":  { /* per-kind, see §4 */ },
@@ -138,10 +145,16 @@ For derivatives, include `underlying`, `expiry`, `strike` and `option_type` in t
 payload. A symbol that doesn't match exactly is recoverable; an ambiguous one
 often isn't.
 
-**On `evidence`.** Optional but valuable: the raw values behind a derived claim
-(the trailing volumes behind a spike ratio, the price series behind a breakout).
-When a user asks "why are you telling me this", we want to answer from data rather
-than restate the claim.
+**On `evidence`.** The raw values behind a derived claim (the trailing volumes
+behind a spike ratio, the price series behind a breakout). When a user asks "why
+are you telling me this", we want to answer from data rather than restate the
+claim.
+
+*(v0.3)* The engine side reports a `tools_called` structure carrying tool input and
+output per insight — machine-readable provenance of how each was derived. That is
+essentially this field. **If it can be exposed on the signal read path, `evidence`
+becomes an expose rather than a build**, which raises it well above the P2 slot it
+was first given.
 
 **On `absent`.** An explicit list beats null-checking every field, and it lets us
 detect a source that has quietly stopped populating something. We'll report back
@@ -156,13 +169,18 @@ you to keep in mind for roadmap but don't need yet.
 
 ### 4.1 `market.*` — price and volume action
 
-> **Withdrawn in v0.2 — do not build these.** `market.circuit`, `market.gap`,
-> `market.iv` (incl. rank/percentile) and the `sigma_move` field are now sourced
-> from our own market feed, which carries circuit bands, locked state, open
-> interest and option greeks in real time. Their specs are kept below only so the
-> field semantics stay documented if we ever hand them back. `market.volume_spike`
-> is **still wanted**, but send raw values rather than a normalised ratio — see
-> §5.1.
+> **Withdrawn — do not build these.** `market.circuit`, `market.gap`,
+> `market.iv` (incl. rank/percentile) and the `sigma_move` field are sourced from
+> our own market feed, which carries circuit bands, locked state, open interest
+> and option greeks in real time. Their specs are kept below only so the field
+> semantics stay documented if we ever hand them back.
+>
+> **`market.gap` includes the gap payload work (A7).** An earlier reply listed A7
+> as "build" while this section withdrew the family — that was our inconsistency,
+> caught on the engine side, and it resolves in favour of withdrawal. No gap work.
+>
+> `market.volume_spike` is **still wanted**, but send raw values rather than a
+> normalised ratio — see §5.1.
 
 #### `market.mover`
 Large intraday moves, whole tradeable universe.
@@ -264,14 +282,22 @@ Shape is flexible — tell us what you have and we'll adapt.
 | `body_text` | string\|null | full text if licensing permits; very valuable |
 | `url` | string | |
 | `publisher` | string | |
-| `published_at` | timestamp | |
-| `entities` | array | `[{isin?, trading_symbol, confidence, role}]` |
+| `published_at` | timestamp | **required** — becomes `event_at` for news. See below |
+| `entities` | array | `[{entity_id, nse_symbol, confidence, role}]` — same identity rules as §3 |
 | `category` | enum\|null | see below |
 | `is_rumour` | bool\|null | unconfirmed/"sources say" reporting |
 
 `category`: `results` `guidance` `block_deal` `pledge` `order_win` `rating_change`
 `regulatory` `legal` `management` `mna` `fundraise` `product` `macro` `sector`
 `other`.
+
+**On `published_at` / `event_at` for news** *(v0.3 — promoted to required).* News
+generation applies a 7-day recency window, so an item can surface days after
+publication. Without the source publication time we cannot tell a breaking story
+from a six-day-old one — row creation time tells us when the job ran, not when the
+world changed, and a stale "breaking" alert is exactly the kind of mistake that
+costs trust. For `news.*`, `event_at` sourced from `pubDate` is **P0**. For the
+deterministic intraday types, creation time as `observed_at` is fine.
 
 `role` in `entities` distinguishes *the company the news is about* from one merely
 mentioned. A supplier named in a competitor's story shouldn't alert that
@@ -489,19 +515,27 @@ at a fixed interval regardless of activity. We cannot otherwise distinguish a qu
 market from a dead feed, and a silently dead feed is the failure mode that damages
 us most: the user learns we're not watching.
 
-### 6.5 Coverage
+### 6.5 Coverage — answered, and now user-facing
 
-Tell us plainly what universe you cover, so we know where our blind spots are:
+*(Documented in v0.3 from the engine side.)*
 
-- NSE and BSE cash equities — all, or an index subset?
-- SME and illiquid scrips — in or out?
-- NSE F&O — all underlyings? Weeklies and monthlies?
-- Indices, and which?
-- MCX commodities?
-- Are dual-listed names sent once or twice?
+| Universe | Coverage |
+|---|---|
+| Cash equities | **1,501 curated names**, NSE+BSE, not the full exchange universe |
+| F&O / OI signals | **136 FNO-enabled** names, a subset of the above |
+| Commodities | dynamic, live MCX universe |
+| Indices | **not covered** — we take these from our own feed |
+| Dual listings | one signal per company, both symbols carried; we don't collapse |
 
 Partial coverage is workable. Undocumented partial coverage is not — we'd be
 telling users nothing happened when we simply couldn't see.
+
+**This makes the coverage manifest (§6.4) user-facing, not just operational.** A
+user holding something outside the curated list gets no coverage on it, and
+silently under-covering a position is the failure mode we least want. We diff a
+user's holdings against the manifest when they connect and tell them plainly which
+holdings we cannot watch. That requires the manifest to be machine-readable and to
+track the curated list as it changes.
 
 ---
 

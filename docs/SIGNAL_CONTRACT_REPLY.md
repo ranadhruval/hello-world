@@ -289,3 +289,134 @@ me and I'll fix it rather than you working around it.
 A1 shrinks from a pipeline to a schema change. Push is not required. What's added
 is small and mostly not code — retention switched on now, a since-cursor read, a
 derivation column on the sentiment doc, and an answer on `insightId` stability.
+
+---
+---
+
+# Round 2 — closing the loop
+
+All eight questions answered with evidence. **This is sufficient to proceed.** The
+remaining critical path is ours, not yours: we build the harness against fixtures
+using your documented shapes and swap in the live source when A1 lands. Nothing
+below blocks you from starting.
+
+## 2.1 Your §4 flag is correct — A7 comes off
+
+Good catch, and it was our error. v0.2 §4.1 withdrew `market.gap` while the reply
+table still listed A7 at P2 "Build". The contract wins, as it should.
+
+**Do not build A7.** We take gaps from our own feed, which carries previous close
+and open directly. Contract corrected in v0.3 so the two can't be read against
+each other again.
+
+## 2.2 Q2 — thank you, but we'll derive the fingerprint. Don't build the column.
+
+Declining the offer of a deterministic `source_event_id` (hash of `entity_id +
+insight_type + state_class`), for a specific reason rather than preference:
+
+**`state_class` is a tuning parameter, not a property of the event.** Whether a
+long buildup at 3% OI change and one at 7% are "the same event" is exactly the
+kind of bucketing we expect to adjust repeatedly during calibration. If the hash
+is computed on your side, every change to dedupe granularity becomes a deploy on
+your side for a decision that is ours.
+
+Once A1 lands you'll be sending the components anyway — `entity_id`,
+`insight_type` and the raw magnitudes. That's everything we need. The column would
+be redundant work whose main effect is to freeze a parameter we want to keep warm.
+
+## 2.3 A1 refinement — ship the seven templated types first
+
+Q3/Q4 surfaced something that changes sequencing: for the seven deterministic
+types the short insight is **templated, not model-generated**, and the raw values
+are already in hand being formatted into that template at save time.
+
+So for those, A1 is close to "persist the values you just passed to the
+formatter". That set — OI Buildup, Key Levels, Volume, Price, Engulfment, Gap Up
+Down, Crossover — is also most of the intraday market family we actually consume.
+
+**Suggested split: A1 for the seven templated types first, the five model types
+second.** It front-loads nearly all of the value into the cheaper half.
+
+(To be unambiguous: this does not soften the rule in D1. We won't parse numbers out
+of templated text either — a template change breaks a parser silently, which is the
+same failure with a shorter fuse. The point is only that persisting the raw values
+is cheaper than we'd assumed.)
+
+## 2.4 Three things from your §6 we want, that we didn't know to ask for
+
+Your §6 was the most useful section in the handoff.
+
+**1. `tools_called` with tool input/output** — this is essentially our `evidence`
+field (A2b). If it can be exposed on the signal read path, **A2b stops being a
+build and becomes an expose**, and we get machine-readable provenance for "why are
+you telling me this" for free. Please treat this as a higher priority than its P2
+slot implied.
+
+**2. `gr1_insights_feedback`** — aggregate thumbs up/down per insight. This is more
+valuable to us than it probably looks from your side. Our per-user learning needs
+several observations before it can influence anything, so a new user's first week
+is necessarily un-personalised. **A population-level prior on which insight types
+land well gives us a sensible starting point instead of a flat one.** Aggregate
+only, no user-level data, no PII — counts by insight type are enough. If there's a
+cheap way to expose that, we'd take it early.
+
+**3. News `pubDate`** — with a 7-day recency filter on news generation, this stops
+being a nicety. A six-day-old article is not breaking news, and without `pubDate`
+we can't tell one from the other; `created_at` would tell us when the job ran, not
+when the world changed. **For `news.*` specifically, `event_at` sourced from
+`pubDate` is P0, not P2.** For the deterministic intraday types, `created_at` as
+`observed_at` is fine.
+
+On the validation/audit trail: if enabling `insight.validation.enabled` is cheap,
+we'd consume the PASS/FAIL verdict as a confidence signal on model-derived types.
+Not worth real work — only asking because it already exists behind a flag.
+
+## 2.5 Q8 coverage — noted, and it changes something on our side rather than yours
+
+1,501 curated cash equities, 136 FNO-enabled for OI, commodities dynamic, **no
+index coverage**. All workable. Indices we take from our own feed, so that gap
+closes itself.
+
+The curated universe means a user holding something outside those 1,501 gets no
+coverage on it. That's a limitation to be honest about rather than one to engineer
+around: **we'll diff a user's holdings against your coverage manifest when they
+connect, and tell them plainly which of their holdings we can't watch.** Silently
+under-covering a position is the failure mode we least want.
+
+This raises the coverage manifest (A5) in value — it's not just operational
+plumbing, it's user-facing. You note it's trivial since the list is static code.
+
+## 2.6 Q1 — the retention clock, restated correctly
+
+Retention exists; **raw retention starts with A1**. So the urgency we attached to
+"switch on retention now" transfers wholesale onto A1: tuning depth is now a
+function of when A1 ships, and no amount of later work recovers the window.
+
+That makes A1 load-bearing three times over — trust (§2 of this doc), dedupe (Q2),
+and tuning depth (this). It is comfortably the highest-value item on the list.
+
+Please do chase the Q1 caveat about platform-side TTL or partition drops outside
+the repo. One line from infra closes it, and if a drop policy does exist it
+silently caps everything above.
+
+## 2.7 Confirmed, no further discussion needed
+
+Q5 per-company emission with both symbols — good, we won't collapse. Q6
+`created_at` as provisional `observed_at` — accepted, with the news exception in
+2.4. Q7 cache — moot, agreed. Q3 `sentiment_source` table — exactly what was
+needed, closed.
+
+## 2.8 Your build order, as we'd rank it
+
+No changes to your §5, only emphasis:
+
+1. **A1, templated types** (2.3) — trust, dedupe and the tuning clock all sit on it
+2. **A2a `event_at`**, with news/`pubDate` first (2.4)
+3. **Since-cursor endpoint** — the transport that removes the need for push
+4. **Coverage manifest** (A5) — now user-facing (2.5)
+5. **Expose `tools_called`** (2.4) — likely cheaper than its priority suggests
+6. A1 model types · backfill read · heartbeat · `exchange`+`segment` · A8 from
+   `filing.fno_ban`
+
+Everything else stands as ruled. We're proceeding on our side now and will come
+back only if something in the fixtures disagrees with what's documented here.
