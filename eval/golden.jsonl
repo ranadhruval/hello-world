@@ -1,0 +1,86 @@
+{"q": "portfolio", "intent": "portfolio.summary", "path": "fast"}
+{"q": "pf", "intent": "portfolio.summary", "path": "fast"}
+{"q": "holdings", "intent": "portfolio.summary", "path": "fast"}
+{"q": "how am i doing", "intent": "portfolio.summary", "path": "fast"}
+{"q": "  PORTFOLIO  ", "intent": "portfolio.summary", "path": "fast"}
+{"q": "pnl", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "p&l", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "today's pnl", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "mera pnl kitna hai", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "aaj ka pnl", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "kitna fayda", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "kitna nuksan", "intent": "portfolio.day_change", "path": "fast"}
+{"q": "positions", "intent": "positions.open", "path": "fast"}
+{"q": "pos", "intent": "positions.open", "path": "fast"}
+{"q": "open positions", "intent": "positions.open", "path": "fast"}
+{"q": "orders", "intent": "orders.open", "path": "fast"}
+{"q": "pending", "intent": "orders.open", "path": "fast"}
+{"q": "open orders", "intent": "orders.open", "path": "fast"}
+{"q": "did my order fill", "intent": "orders.status", "path": "fast"}
+{"q": "what did i trade today", "intent": "orders.history", "path": "fast"}
+{"q": "aaj kya khareeda", "intent": "orders.history", "path": "fast"}
+{"q": "margin", "intent": "margin.available", "path": "fast"}
+{"q": "balance", "intent": "margin.available", "path": "fast"}
+{"q": "funds", "intent": "margin.available", "path": "fast"}
+{"q": "kitna balance", "intent": "margin.available", "path": "fast"}
+{"q": "how much margin", "intent": "margin.utilisation", "path": "fast"}
+{"q": "margin utilisation", "intent": "margin.utilisation", "path": "fast"}
+{"q": "market", "intent": "market.index", "path": "fast"}
+{"q": "indices", "intent": "market.index", "path": "fast"}
+{"q": "nifty", "intent": "market.index", "path": "fast"}
+{"q": "sensex", "intent": "market.index", "path": "fast"}
+{"q": "banknifty", "intent": "market.index", "path": "fast"}
+{"q": "nifty open high low", "intent": "market.ohlc", "path": "fast"}
+{"q": "ohlc", "intent": "market.ohlc", "path": "fast"}
+{"q": "nifty option chain", "intent": "fno.chain", "path": "fast"}
+{"q": "option chain", "intent": "fno.chain", "path": "fast"}
+{"q": "where's the max OI", "intent": "fno.levels", "path": "fast"}
+{"q": "oi wall", "intent": "fno.levels", "path": "fast"}
+{"q": "support resistance", "intent": "fno.levels", "path": "fast"}
+{"q": "delta of my position", "intent": "fno.greeks", "path": "fast"}
+{"q": "greeks", "intent": "fno.greeks", "path": "fast"}
+{"q": "tell me if nifty hits 25200", "intent": "watch.add", "path": "fast"}
+{"q": "tell me when gold crosses 62000", "intent": "watch.add", "path": "fast"}
+{"q": "watchlist", "intent": "watch.list", "path": "fast"}
+{"q": "alerts", "intent": "watch.list", "path": "fast"}
+{"q": "help", "intent": "meta.help", "path": "fast"}
+{"q": "what can you do", "intent": "meta.help", "path": "fast"}
+{"q": "link", "intent": "meta.link", "path": "fast"}
+{"q": "connect my account", "intent": "meta.link", "path": "fast"}
+{"q": "unlink", "intent": "meta.unlink", "path": "fast"}
+{"q": "settings", "intent": "meta.settings", "path": "fast"}
+{"q": "mute", "intent": "meta.settings", "path": "fast"}
+{"q": "quiet hours", "intent": "meta.settings", "path": "fast"}
+{"q": "why is silver up", "intent": "analysis.why", "path": "llm"}
+{"q": "what happened to kaynes", "intent": "analysis.why", "path": "llm"}
+{"q": "kyun gir raha hai", "intent": "analysis.why", "path": "llm"}
+{"q": "what is a bull put spread", "intent": "analysis.explain", "path": "llm", "forbid_regex": "\\byou should\\b"}
+{"q": "explain IV", "intent": "analysis.explain", "path": "llm"}
+{"q": "what's my risk", "intent": "positions.risk", "path": "llm"}
+{"q": "am i exposed", "intent": "positions.risk", "path": "llm"}
+{"q": "payoff for my spread", "intent": "fno.payoff", "path": "llm"}
+{"q": "should i buy reliance", "path": "llm", "forbid_regex": "\\byou should (buy|sell|exit|book)\\b"}
+{"q": "what's the weather", "intent": "reject", "path": "reject"}
+{"q": "tell me a joke", "intent": "reject", "path": "reject"}
+{"q": "who is the president", "intent": "reject", "path": "reject"}
+{"q": "write me python code", "intent": "reject", "path": "reject"}
+{"q": "what's the capital of france", "intent": "reject", "path": "reject"}
+{"q": "", "intent": "reject", "path": "reject"}
+{"q": "nifty 25000 ce", "resolve_to": {"trading_symbol": "NIFTY2691525000CE", "lot_size": 65, "exchange": "NSE", "segment": "FNO"}}
+{"q": "nifty 19550 ce", "resolve_to": {"trading_symbol": "NIFTY2691519550CE", "lot_size": 65}}
+{"q": "bn 54000 pe", "resolve_to": {"trading_symbol": "BANKNIFTY26SEP54000PE", "exchange": "NSE"}}
+{"q": "banknifty 54000 pe", "resolve_to": {"trading_symbol": "BANKNIFTY26SEP54000PE"}}
+{"q": "nifty fut", "resolve_to": {"instrument_type": "FUT", "underlying": "NIFTY"}}
+{"q": "reliance", "resolve_to": {"trading_symbol": "RELIANCE", "exchange": "NSE", "segment": "CASH"}}
+{"q": "ril", "resolve_to": {"trading_symbol": "RELIANCE", "exchange": "NSE"}}
+{"q": "infosys", "resolve_to": {"trading_symbol": "INFY", "exchange": "NSE"}}
+{"q": "sbi", "resolve_to": {"trading_symbol": "SBIN", "exchange": "NSE"}}
+{"q": "hdfc bank", "resolve_to": {"trading_symbol": "HDFCBANK", "exchange": "NSE"}}
+{"q": "nifty", "resolve_to": {"trading_symbol": "NIFTY", "instrument_type": "IDX"}}
+{"q": "gold", "expect_ambiguous": true, "note": "GOLD trades on both MCX and NSE — never guess"}
+{"q": "sona", "expect_ambiguous": true, "note": "alias must reach the metal, not an equity"}
+{"q": "chandi", "expect_ambiguous": true, "note": "NSE lists an equity called SILVER; must not match it"}
+{"q": "gold", "user_venues": [["MCX", "GOLD"]], "resolve_to": {"exchange": "MCX", "instrument_type": "FUT"}}
+{"q": "chandi", "user_venues": [["MCX", "SILVER"]], "resolve_to": {"exchange": "MCX", "underlying": "SILVER"}}
+{"q": "nifty 25001 ce", "expect_ambiguous": true, "note": "off-ladder strike offers neighbours"}
+{"q": "zzzznotathing", "expect_unresolved": true}
