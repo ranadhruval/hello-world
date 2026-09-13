@@ -1,8 +1,15 @@
-# Market Signal Contract v0.1
+# Market Signal Contract v0.2
 
 **For:** the team/agent building the insights generation engine
 **From:** the team building the personalisation and delivery layer
-**Status:** draft for review. Nothing here is final until you've told us what is and isn't feasible.
+**Status:** revised after your first handoff. Rulings and rationale in
+`SIGNAL_CONTRACT_REPLY.md`; this file is the source of truth where the two differ.
+
+**Changed in v0.2:** sentiment and rank accepted as advisory (§4.2) · ISIN demoted
+to optional, exchange+segment+internal id now required (§3) · push no longer
+required, since-cursor polling is the transport ask (§6.1–6.2) · circuit, gap, IV
+and σ moved to our own market feed (§4.1) · retention separated from backfill and
+made urgent (§6.3).
 
 ---
 
@@ -114,13 +121,22 @@ Every signal, regardless of kind, has this shape:
 }
 ```
 
-**On `entity`.** ISIN is the identity we want wherever one exists — it survives
-symbol changes and disambiguates dual listings cleanly. For indices, F&O contracts
-and commodities there is no ISIN; send the fullest `(exchange, segment,
-trading_symbol)` you have, and for derivatives include `underlying`, `expiry`,
-`strike` and `option_type` in the payload. We resolve everything through our own
-instrument master, so a symbol that doesn't match exactly is recoverable — an
-ambiguous one often isn't.
+**On `entity`.** *(Revised in v0.2 — ISIN is no longer requested.)* We resolve
+identity on our side through our own instrument master, which we run regardless in
+order to resolve free-text user input. **Do not build ISIN plumbing for us.**
+
+Send the internal identifiers you already have — `nse_symbol`, `bse_code`,
+`groww_contract_id`, `entity_id` — and we map. Two things are required rather than
+optional, because a fuzzy matcher shouldn't have to guess at them:
+
+- **`exchange` and `segment`** alongside the symbol. A bare symbol is ambiguous
+  across venues and segments.
+- **A stable internal id** (`entity_id`), so we cache the resolution instead of
+  re-running it per signal.
+
+For derivatives, include `underlying`, `expiry`, `strike` and `option_type` in the
+payload. A symbol that doesn't match exactly is recoverable; an ambiguous one
+often isn't.
 
 **On `evidence`.** Optional but valuable: the raw values behind a derived claim
 (the trailing volumes behind a spike ratio, the price series behind a breakout).
@@ -139,6 +155,14 @@ Grouped by family. Leg 1 is what we need first; **Later** marks things we'd like
 you to keep in mind for roadmap but don't need yet.
 
 ### 4.1 `market.*` — price and volume action
+
+> **Withdrawn in v0.2 — do not build these.** `market.circuit`, `market.gap`,
+> `market.iv` (incl. rank/percentile) and the `sigma_move` field are now sourced
+> from our own market feed, which carries circuit bands, locked state, open
+> interest and option greeks in real time. Their specs are kept below only so the
+> field semantics stay documented if we ever hand them back. `market.volume_spike`
+> is **still wanted**, but send raw values rather than a normalised ratio — see
+> §5.1.
 
 #### `market.mover`
 Large intraday moves, whole tradeable universe.
@@ -254,9 +278,23 @@ mentioned. A supplier named in a competitor's story shouldn't alert that
 supplier's holder. If you can only do mention-detection, say so — we'll weight
 accordingly rather than assume.
 
-**We do not want sentiment or impact scores.** Whether a piece of news is good or
-bad depends on which side of the position the reader is on, and we judge that
-ourselves with the position in hand. Category and entity are what we need from you.
+**On sentiment and rank** *(revised in v0.2 — v0.1 rejected these outright, which
+was too blunt).* Keep emitting both. We consume `sentiment` as **advisory only**:
+never as a gate, and never as the sole source of direction — we need the raw
+magnitudes so we can derive direction ourselves. We don't order on `rank`, since
+our ordering is per-person, but there's no reason to strip it.
+
+The distinction v0.1 missed: sentiment **about the instrument** ("negative for the
+company") is a legitimate, largely objective claim and is what you produce.
+Sentiment **about the reader** ("bad news for you") depends on which side of the
+position they're on, and is ours to compute.
+
+**One thing we do need, and it's a doc change not a build:** tell us how
+`sentiment` is derived, per insight type — `derived | model | none`. Sentiment
+mechanically derived from a buildup class is a deterministic relabel we can trust
+and cross-check; sentiment inferred from article text is a weak prior. Without
+knowing which is which we must treat all of it as the weakest case, which wastes
+the deterministic ones.
 
 ---
 
@@ -375,30 +413,47 @@ the fill as an **update carrying the same `source_event_id`**, not a new event.
 
 ## 6. Delivery
 
-### 6.1 Push vs poll
+### 6.1 Transport — **do not build push**
 
-Push (webhook or stream) for anything event-shaped — circuits, gaps, breakouts,
-volume spikes, news, filings. Poll is acceptable for snapshots: movers, macro, OI,
-IV. If push is significantly harder on your side, tell us; we'll poll and eat the
-latency rather than have you build transport you don't have.
+*(Revised in v0.2. v0.1 asked for webhooks; that requirement is withdrawn.)*
+
+The 60-second targets in v0.1 existed for circuits and gaps. Both now come from
+our own market feed, so the tight-latency items are off your critical path
+entirely. What remains on your side — news, filings, OI, concall — has a natural
+floor in the minutes regardless of transport. **Poll at 60s is acceptable.**
+
+Two things make polling work properly, and the first is the real transport ask:
+
+1. **A since-cursor endpoint.** `GET /signals?since=<cursor>` returning everything
+   new across all entities in one call. Per-entity polling doesn't scale —
+   watching N instruments is N requests per cycle, worse with every user. One
+   changed-since firehose replaces all of it and removes the reason push existed.
+   It is substantially cheaper to build than push.
+2. **An uncached path, or a shorter TTL, on that endpoint.** A 5-minute cache in
+   front of a 60-second poll makes the interval decorative.
+
+If the raw write can land before the prose step (see the reply doc, D1), effective
+latency on poll should be good enough that push never needs building.
 
 ### 6.2 Latency budget
 
-What we're designing against. These are targets, not hard requirements — tell us
-where they're unrealistic and we'll adjust the product rather than pretend.
+Targets, not hard requirements — tell us where they're unrealistic and we'll adjust
+the product rather than pretend.
 
 | Kind | Target, from `event_at` |
 |---|---|
-| `market.circuit`, `market.gap` | 60s |
 | `filing.*` | 2 min |
 | `market.volume_spike`, `market.breakout` | 3 min |
 | `news.item` | 5 min |
-| `market.oi`, `market.iv` | one 3-min bar |
+| `market.oi` | one 3-min bar |
 | `market.mover`, `market.macro` | 1 min refresh |
 
-Filings are tightest after circuits because they're the highest-confidence
-explanation of a move, and a move explained 20 minutes late has usually already
-been explained by the market.
+Filings are tightest because they're the highest-confidence explanation of a move,
+and a move explained 20 minutes late has usually already been explained by the
+market.
+
+`market.circuit`, `market.gap`, `market.iv` and `sigma_move` are **no longer on
+this list** — we source them ourselves.
 
 ### 6.3 Ordering, retries, backfill
 
@@ -411,6 +466,21 @@ been explained by the market.
   personalisation offline by replaying real signal days; without backfill, every
   threshold change costs a week of live market to evaluate. **Please treat this as
   a Leg 1 requirement.**
+
+  **Retention is separable from the read API, and far more urgent** *(added in
+  v0.2)*. If signals expire and are purged, backfill cannot be built
+  retrospectively — the history won't exist — and **the depth we can ever tune
+  against is set by when retention starts, not when the API ships.** So: start
+  retaining now, even with no read path, no envelope and no schema change. Cold
+  storage, a dump table, an object-store prefix; anything append-only. Every week
+  this waits is a week of tuning data that cannot be recovered.
+
+  Depth: **12 months ideal, 3 months floor.** Below ~60 sessions there isn't
+  enough to separate a threshold from noise; 12 months matters because it spans at
+  least one high-volatility episode and a full set of monthly expiries, and
+  thresholds tuned only on a calm market fire constantly in a volatile one. If
+  depth is expensive, **raw-field history is worth more to us than prose history**
+  — 12 months raw-only beats 3 months of everything.
 
 ### 6.4 Heartbeat
 
@@ -464,16 +534,23 @@ before shipping one.
 
 ## 9. Open questions for you
 
-1. Which of §4 exists today, which is straightforward, and which is a real project?
-2. Is time-of-day-normalised relative volume (§5.1) something you have, or should
-   we plan to derive it from raw volumes?
-3. Can you provide `sigma_move` (§5.2), or should we compute it from candles?
-4. What's realistic on filings latency? This one most affects how good the product
-   feels.
-5. Does news entity-linking distinguish subject from mention (§4.2 `role`)?
-6. Is backfill (§6.3) available, and over what history?
-7. What does coverage (§6.5) actually look like today?
-8. Push or poll — what's natural for you? We'll build to whichever.
+*(Revised in v0.2 — your first handoff answered most of the original list. These
+are what's still open, in order of consequence.)*
+
+1. **Are expired signal rows retained or purged?** Most consequential question
+   here — see §6.3.
+2. **Is the signal id stable across regenerations of the same underlying
+   condition, or per persisted row?** This determines whether dedupe is possible
+   at all. If it's per-row we can fingerprint on `(entity, type, state_class)`
+   ourselves — but only once raw magnitudes are persisted.
+3. How is `sentiment` derived, per signal type — deterministic or model? (§4.2)
+4. Can the raw structured write be decoupled from, and land before, the prose
+   generation step?
+5. Is a signal emitted once per entity, or once per listing? (§3, dual listings)
+6. Does anything today carry a **market event time**, as distinct from the row's
+   creation time? (§2, principle 4)
+7. Is the read cache TTL configurable per client? (§6.1)
+8. What does coverage (§6.5) actually look like today?
 9. Anything you already produce that isn't in this document? We wrote it from what
    we need, not from what exists, so there are probably useful things we haven't
    thought to ask for.
