@@ -1,0 +1,23 @@
+{
+  "name": "groww-desk-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp bridge. Owns the Baileys session; publishes inbound to Redis and exposes a small HTTP surface for outbound.",
+  "scripts": {
+    "start": "tsx index.ts",
+    "dev": "tsx watch index.ts"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0",
+    "redis": "^4.7.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.0",
+    "@types/qrcode-terminal": "^0.12.2"
+  }
+}

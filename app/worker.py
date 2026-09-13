@@ -14,11 +14,11 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path as FilePath
 
-from app.channel.base import Channel, InboundMessage
+from app.channel.base import Channel, InboundMessage, OutboundMessage
 from app.config import settings
-from app.render import templates as tpl
-from app.router.fastpath import Path, classify
+from app.router.fastpath import Intent, Path, classify
 from app.tools.instruments import InstrumentIndex
 
 log = logging.getLogger(__name__)
@@ -143,14 +143,20 @@ class Worker:
 
     async def _respond(self, msg: InboundMessage, text: str) -> None:
         started = time.monotonic()
-        desk = await self._desk_for(msg.wa_id)
-        if desk is None:
-            await self._channel.send(_onboarding(msg.wa_id))
+        route = classify(text, resolves_to_instrument=lambda q: self._index.resolve(q).ok)
+
+        # Account-level intents need the Store, which Desk deliberately does
+        # not have — it answers about markets, not about accounts.
+        account = await self._account_intent(route, msg.wa_id)
+        if account is not None:
+            await self._channel.send(account)
             return
 
-        route = classify(
-            text, resolves_to_instrument=lambda q: self._index.resolve(q).ok
-        )
+        desk = await self._desk_for(msg.wa_id)
+        if desk is None:
+            await self._channel.send(await self._onboarding(msg.wa_id))
+            return
+
         out = await desk.handle(route, msg.wa_id)
         channel_msg_id = await self._channel.send(out)
 
@@ -164,28 +170,162 @@ class Worker:
             await self._store.log_trace(in_id, str(route.path), str(route.intent))
 
 
-def _onboarding(wa_id: str):
-    from app.channel.base import OutboundMessage
+    async def _account_intent(self, route, wa_id: str) -> OutboundMessage | None:
+        """Handle meta.link / meta.unlink. Returns None for everything else."""
+        if self._store is None:
+            return None
 
-    return OutboundMessage(
-        wa_id=wa_id,
-        kind="buttons",
-        text=(
+        if route.intent is Intent.META_LINK:
+            return await self._onboarding(wa_id, greet=False)
+
+        if route.intent is Intent.META_UNLINK:
+            user_id = await self._store.user_id_for(wa_id, create=False)
+            if user_id is not None:
+                await self._store.delete_user_data(user_id)
+            return OutboundMessage(
+                wa_id=wa_id,
+                kind="text",
+                text="Disconnected. Your credentials and history are deleted.",
+            )
+        return None
+
+    async def _onboarding(self, wa_id: str, greet: bool = True) -> OutboundMessage:
+        """A link with no token is a dead link — /link returns 410 without one."""
+        url = f"{settings().public_base_url}/link"
+        if self._store is not None:
+            url = f"{url}?t={self._store.new_link_token(wa_id)}"
+
+        greeting = (
             "Hi — I'm your Groww desk. I can tell you about your\n"
             "holdings, positions, orders, margin and live prices.\n\n"
-            f"First, connect your account: {settings().public_base_url}/link\n"
-            "Takes 30 seconds, and I'll only ever read."
-        ),
-        buttons=["Connect Groww"],
+            if greet
+            else ""
+        )
+        return OutboundMessage(
+            wa_id=wa_id,
+            kind="text",
+            text=(
+                f"{greeting}Connect your account: {url}\n"
+                "Takes 30 seconds, expires in 10 minutes, and I'll only ever read."
+            ),
+        )
+
+
+STREAM = "inbound"
+GROUP = "workers"
+
+
+async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
+    """Drain the inbound stream.
+
+    A consumer group rather than a plain read, so a restart neither loses
+    messages nor replays the ones already handled.
+    """
+    try:
+        await redis.xgroup_create(STREAM, GROUP, id="0", mkstream=True)
+    except Exception as exc:  # BUSYGROUP — already exists
+        if "BUSYGROUP" not in str(exc):
+            raise
+
+    log.info("consuming %s as %s", STREAM, consumer)
+    while True:
+        try:
+            batch = await redis.xreadgroup(GROUP, consumer, {STREAM: ">"}, count=10, block=5000)
+        except Exception:
+            log.exception("stream read failed; retrying in 2s")
+            await asyncio.sleep(2)
+            continue
+
+        for _stream, entries in batch or []:
+            for entry_id, fields in entries:
+                try:
+                    await worker.handle(_to_inbound(fields))
+                except Exception:
+                    # Never let one bad message stall the stream.
+                    log.exception("failed handling %s", entry_id)
+                finally:
+                    await redis.xack(STREAM, GROUP, entry_id)
+
+
+def _to_inbound(fields: dict) -> InboundMessage:
+    get = lambda k, d="": _decode(fields.get(k.encode(), fields.get(k, d)))  # noqa: E731
+    return InboundMessage(
+        channel_msg_id=get("channel_msg_id"),
+        wa_id=get("wa_id"),
+        text=get("text") or None,
+        ts=int(get("ts", "0") or 0),
+        quoted_id=get("quoted_id") or None,
     )
+
+
+def _decode(v) -> str:
+    return v.decode() if isinstance(v, bytes) else str(v or "")
 
 
 async def main() -> None:  # pragma: no cover - process entrypoint
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log.info("worker starting; %s", tpl.HELP.splitlines()[0])
-    # Wiring the Redis stream consumer is the next step; app/repl.py drives
-    # the same Worker over stdin today.
-    await asyncio.Event().wait()
+
+    import redis.asyncio as aioredis
+
+    from app.auth.broker import TokenBroker
+    from app.auth.crypto import Crypto
+    from app.channel.baileys import BaileysChannel
+    from app.dispatch import Desk
+    from app.infra import Cache, CircuitBreaker, RateLimiter, RedisBackend
+    from app.store.db import Store
+    from app.tools.groww import GrowwTools
+    from app.tools.instruments import ensure_csv
+
+    cfg = settings()
+    index = InstrumentIndex.from_csv(ensure_csv(FilePath("data/instruments.csv")))
+    log.info("instrument master: %d instruments", len(index))
+
+    redis = aioredis.from_url(cfg.redis_url)
+    backend = RedisBackend(redis)
+    store = Store()
+    broker = TokenBroker(store, Crypto(cfg.cred_key))
+    channel = BaileysChannel(cfg.baileys_url)
+    cache, limiter = Cache(backend), RateLimiter(backend)
+    desks: dict[int, Desk] = {}
+
+    async def desk_for(wa_id: str) -> Desk | None:
+        user_id = await store.user_id_for(wa_id)
+        if not await store.is_linked(user_id):
+            return None
+        if user_id not in desks:
+            tools = GrowwTools(broker, user_id, cache, limiter, CircuitBreaker())
+            desks[user_id] = Desk(tools, index)
+        return desks[user_id]
+
+    worker = Worker(channel, index, desk_for, store=store, deduper=Deduper(redis))
+
+    if not await channel.health():
+        log.warning("adapter at %s is not connected — is it running?", cfg.baileys_url)
+
+    await asyncio.gather(consume(redis, worker), _refresh_instruments_daily(index))
+
+
+async def _refresh_instruments_daily(index: InstrumentIndex) -> None:  # pragma: no cover
+    """Rebuild the master at 07:30 IST (spec §23)."""
+    from datetime import datetime, timedelta
+
+    from app.config import IST
+    from app.tools.instruments import download, read_csv
+
+    path = FilePath("data/instruments.csv")
+    while True:
+        now = datetime.now(IST)
+        target = now.replace(hour=7, minute=30, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            download(path)
+            fresh = InstrumentIndex(read_csv(path))
+            index.__dict__.update(fresh.__dict__)  # swap in place, keep the reference
+            log.info("instrument master refreshed: %d instruments", len(index))
+        except Exception:
+            log.exception("instrument refresh failed; keeping yesterday's master")
 
 
 if __name__ == "__main__":  # pragma: no cover

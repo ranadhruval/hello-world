@@ -35,6 +35,7 @@ from app.auth.broker import _access_token  # noqa: E402
 from app.render.templates import inr, signed  # noqa: E402
 from app.tools.instruments import InstrumentIndex, ensure_csv  # noqa: E402
 from app.tools.pnl import (  # noqa: E402
+    DEFAULT_BASIS,
     Basis,
     holding_pnl,
     margin_utilisation,
@@ -175,15 +176,57 @@ def reconcile_positions(groww: GrowwAPI) -> None:
 
     print(RULE)
     print(f"{'TOTAL':<24}{'':>7}{'':>11}{signed(avg_total):>13}{signed(notional_total):>13}")
-    print("""
-  >> Which column matches the app's position P&L?
+    print()
+    report_basis(live, ltps)
 
-     AVERAGE   credit_price / debit_price are per-unit average prices
-     NOTIONAL  they are whole-leg values, so the basis needs dividing by qty
 
-     Pin the winner in app/tools/pnl.py:DEFAULT_BASIS. Until this is
-     settled every F&O number the bot reports is unverified.
-""")
+def report_basis(live: list[Position], ltps: dict[str, float]) -> None:
+    """Decide whether credit_price/debit_price are per-unit or whole-leg.
+
+    The two are separated by a factor of the quantity, so the raw field sits
+    either near the LTP (per-unit) or near qty x LTP (notional). Reading that
+    off the magnitudes is more reliable than asking someone to compare two
+    columns of P&L against an app, and it is the same evidence either way.
+
+    Positions with quantity 1 cannot discriminate and are skipped.
+    """
+    votes: list[tuple[str, str]] = []
+    for p in live:
+        net = p.credit_quantity - p.debit_quantity
+        raw = p.credit_price if net > 0 else p.debit_price
+        qty = abs(net)
+        ltp = ltps.get(f"{p.exchange or 'NSE'}_{p.trading_symbol}", 0.0)
+        if not (raw and ltp and qty) or qty == 1:
+            continue
+        # Whichever hypothesis puts the per-unit basis closer to the LTP wins.
+        per_unit_err = abs(raw - ltp) / ltp
+        notional_err = abs(raw / qty - ltp) / ltp
+        votes.append((p.trading_symbol, "AVERAGE" if per_unit_err <= notional_err else "NOTIONAL"))
+
+    if not votes:
+        print("  >> Cannot tell which basis convention applies: no position with a\n"
+              "     quantity above 1 and a live price. Both columns above are\n"
+              "     identical for quantity-1 legs. DEFAULT_BASIS stays unverified\n"
+              "     until you hold a multi-unit F&O position.\n")
+        return
+
+    verdicts = {v for _, v in votes}
+    if len(verdicts) > 1:
+        print("  >> Positions disagree about the basis convention:")
+        for symbol, verdict in votes:
+            print(f"       {symbol:<24} {verdict}")
+        print("     That should not happen. Send me this output.\n")
+        return
+
+    verdict = verdicts.pop()
+    current = DEFAULT_BASIS.name
+    print(f"  >> Basis convention is {verdict} (agreed across {len(votes)} position(s)).")
+    if verdict == current:
+        print(f"     app/tools/pnl.py:DEFAULT_BASIS is already {current}. Nothing to change.\n")
+    else:
+        print(f"     DEFAULT_BASIS is currently {current} — change it to Basis.{verdict}.")
+        print("     Every F&O number reported so far was wrong by a factor of the\n"
+              "     quantity, so re-check anything you relied on.\n")
 
 
 def reconcile_margin(groww: GrowwAPI) -> None:
