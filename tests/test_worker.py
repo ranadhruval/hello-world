@@ -290,6 +290,55 @@ async def test_idle_timeout_is_not_treated_as_a_failure():
     assert calls["sleeps"] == 0, "an idle timeout must not trigger the retry backoff"
 
 
+# ---- JID round-trip ------------------------------------------------
+
+
+def test_to_inbound_reads_the_jid():
+    msg = _to_inbound({"wa_id": "919999999999", "text": "link", "jid": "12345@lid", "ts": "0"})
+    assert msg.jid == "12345@lid"
+
+
+def test_to_inbound_tolerates_a_missing_jid():
+    """Messages already sitting in the stream predate the field."""
+    assert _to_inbound({"wa_id": "91", "text": "hi", "ts": "0"}).jid is None
+
+
+async def test_reply_echoes_the_inbound_jid():
+    """A @lid chat cannot be addressed by rebuilding <wa_id>@s.whatsapp.net —
+    the digits are an opaque id, not a phone number."""
+    store = FakeStore()
+    worker, channel = make_worker(store=store)
+    await worker.handle(inbound("link", msg_id="x", jid="4477@lid"))
+
+    assert channel.sent[0].jid == "4477@lid"
+
+
+async def test_desk_replies_also_echo_the_jid():
+    store = FakeStore()
+
+    class Desk:
+        async def handle(self, route, wa_id):
+            return OutboundMessage(wa_id=wa_id, kind="text", text="ok")
+
+    worker, channel = make_worker(store=store, desk=Desk())
+    await worker.handle(inbound("portfolio", jid="999@lid"))
+
+    assert channel.sent[0].jid == "999@lid"
+
+
+async def test_account_intents_are_logged(caplog):
+    """The intent log used to sit after an early return, so a working link
+    flow produced no log line and looked like a dropped message."""
+    import logging
+
+    store = FakeStore()
+    worker, _ = make_worker(store=store)
+    with caplog.at_level(logging.INFO, logger="app.worker"):
+        await worker.handle(inbound("link"))
+
+    assert any("intent=meta.link" in r.getMessage() for r in caplog.records)
+
+
 async def test_a_real_read_error_still_backs_off():
     calls = {"reads": 0, "sleeps": 0}
 

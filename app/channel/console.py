@@ -35,10 +35,16 @@ class ConsoleChannel:
         return True
 
 
-def inbound(text: str, wa_id: str = "919999999999", msg_id: str | None = None) -> InboundMessage:
+def inbound(
+    text: str,
+    wa_id: str = "919999999999",
+    msg_id: str | None = None,
+    jid: str | None = None,
+) -> InboundMessage:
     return InboundMessage(
         channel_msg_id=msg_id or f"in-{time.time_ns()}",
         wa_id=wa_id,
         text=text,
         ts=int(time.time() * 1000),
+        jid=jid,
     )

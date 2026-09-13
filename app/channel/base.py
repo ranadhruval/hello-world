@@ -22,6 +22,10 @@ class InboundMessage:
     wa_id: str  # E.164 without '+'
     text: str | None
     ts: int  # epoch ms
+    # The channel's own address for this chat. Carried verbatim so replies
+    # echo it instead of rebuilding one — WhatsApp also uses <id>@lid, whose
+    # digits are an opaque id rather than a phone number.
+    jid: str | None = None
     media_url: str | None = None
     media_mime: str | None = None
     quoted_id: str | None = None
@@ -32,6 +36,7 @@ class OutboundMessage:
     wa_id: str
     kind: Kind
     text: str
+    jid: str | None = None
     image_bytes: bytes | None = None
     buttons: list[str] = field(default_factory=list)
     list_rows: list[tuple[str, str]] = field(default_factory=list)

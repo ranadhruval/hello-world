@@ -21,6 +21,7 @@ class BaileysChannel:
     async def send(self, msg: OutboundMessage) -> str:
         payload: dict[str, object] = {
             "wa_id": msg.wa_id,
+            "jid": msg.jid,
             "kind": msg.kind,
             "text": msg.text,
             "reply_to": msg.reply_to,

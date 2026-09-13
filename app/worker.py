@@ -149,19 +149,23 @@ class Worker:
 
         # Account-level intents need the Store, which Desk deliberately does
         # not have — it answers about markets, not about accounts.
-        account = await self._account_intent(route, msg.wa_id)
-        if account is not None:
-            await self._channel.send(account)
-            return
+        out = await self._account_intent(route, msg.wa_id)
+        if out is None:
+            desk = await self._desk_for(msg.wa_id)
+            out = (
+                await desk.handle(route, msg.wa_id)
+                if desk is not None
+                else await self._onboarding(msg.wa_id)
+            )
 
-        desk = await self._desk_for(msg.wa_id)
-        if desk is None:
-            await self._channel.send(await self._onboarding(msg.wa_id))
-            return
-
-        out = await desk.handle(route, msg.wa_id)
+        # Reply to the address the message arrived on. One place, so no path
+        # can forget and fall back to a rebuilt JID.
+        out.jid = msg.jid
         channel_msg_id = await self._channel.send(out)
 
+        # Every handled message logs, on every path. This used to sit after an
+        # early return, so account intents were silently absent from the log
+        # and a working link flow looked like a dropped message.
         latency_ms = int((time.monotonic() - started) * 1000)
         log.info("intent=%s path=%s %dms", route.intent, route.path, latency_ms)
         if self._store:
@@ -272,6 +276,7 @@ def _to_inbound(fields: dict) -> InboundMessage:
         text=get("text") or None,
         ts=int(get("ts", "0") or 0),
         quoted_id=get("quoted_id") or None,
+        jid=get("jid") or None,
     )
 
 

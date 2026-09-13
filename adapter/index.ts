@@ -74,6 +74,7 @@ function flatten(payload: OutboundPayload): string {
 
 interface OutboundPayload {
   wa_id: string
+  jid?: string
   kind: 'text' | 'image' | 'buttons' | 'list'
   text: string
   buttons?: string[]
@@ -141,6 +142,10 @@ async function start(): Promise<void> {
       const entry = {
         channel_msg_id: msg.key.id ?? '',
         wa_id: jidToWaId(jid),
+        // The exact address to reply to. wa_id is the user-facing identity and
+        // cannot be turned back into a JID: WhatsApp also addresses chats as
+        // <id>@lid, where the digits are an opaque id and not a phone number.
+        jid,
         text,
         ts: String(Number(msg.messageTimestamp ?? 0) * 1000),
         quoted_id: msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? '',
@@ -150,7 +155,7 @@ async function start(): Promise<void> {
         await redis.xAdd(STREAM, '*', entry, {
           TRIM: { strategy: 'MAXLEN', strategyModifier: '~', threshold: STREAM_MAXLEN },
         })
-        log.info({ wa_id: entry.wa_id, id: entry.channel_msg_id }, 'inbound')
+        log.info({ jid, wa_id: entry.wa_id, id: entry.channel_msg_id }, 'inbound')
       } catch (err) {
         log.error({ err }, 'failed to publish inbound — message dropped')
       }
@@ -187,12 +192,22 @@ function send(res: ServerResponse, code: number, body: unknown): void {
 const server = createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
-      return send(res, connected ? 200 : 503, { connected })
+      // Report our own JID: it shows which addressing scheme this account is
+      // on, which is the one thing wa_id alone cannot tell you.
+      return send(res, connected ? 200 : 503, {
+        connected,
+        jid: sock?.user?.id ?? null,
+      })
     }
 
     if (req.method === 'POST' && req.url === '/typing') {
-      const { wa_id, on } = (await readJson(req)) as unknown as { wa_id: string; on: boolean }
-      await sock?.sendPresenceUpdate(on ? 'composing' : 'paused', `${wa_id}@s.whatsapp.net`)
+      const body = (await readJson(req)) as unknown as {
+        wa_id: string
+        jid?: string
+        on: boolean
+      }
+      const target = body.jid || `${body.wa_id}@s.whatsapp.net`
+      await sock?.sendPresenceUpdate(body.on ? 'composing' : 'paused', target)
       return send(res, 200, { ok: true })
     }
 
@@ -200,7 +215,10 @@ const server = createServer(async (req, res) => {
       if (!sock || !connected) return send(res, 503, { error: 'not connected' })
 
       const payload = await readJson(req)
-      const jid = `${payload.wa_id}@s.whatsapp.net`
+      // Echo the address the message came from. Only fall back to building
+      // one when there is nothing to echo — the console REPL, or a future
+      // proactive send with no inbound message behind it.
+      const jid = payload.jid || `${payload.wa_id}@s.whatsapp.net`
 
       const content =
         payload.kind === 'image' && payload.image_b64
@@ -213,7 +231,7 @@ const server = createServer(async (req, res) => {
         // Never report delivery without an id from the channel (spec §18.2).
         return send(res, 502, { error: 'send returned no message id' })
       }
-      log.info({ wa_id: payload.wa_id, id }, 'outbound')
+      log.info({ jid, wa_id: payload.wa_id, id }, 'outbound')
       return send(res, 200, { channel_msg_id: id })
     }
 
