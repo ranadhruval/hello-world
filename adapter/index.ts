@@ -19,6 +19,10 @@ import qrcode from 'qrcode-terminal'
 import { createClient } from 'redis'
 
 const PORT = Number(process.env.ADAPTER_PORT ?? 3001)
+// Bind loopback only. /send can make this WhatsApp account message anyone, so
+// listening on 0.0.0.0 would hand that to everything on the same network.
+// The worker is the only caller and runs on the same box.
+const HOST = process.env.ADAPTER_HOST ?? '127.0.0.1'
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 const STREAM = process.env.INBOUND_STREAM ?? 'inbound'
 const SESSION_DIR = process.env.SESSION_DIR ?? './session'
@@ -227,7 +231,7 @@ async function main(): Promise<void> {
   // Listen before connecting to WhatsApp, so /health answers 503 while the
   // session is still pairing or broken. Starting Baileys first means a
   // connection failure leaves nothing to ask.
-  server.listen(PORT, () => log.info({ port: PORT }, 'adapter listening'))
+  server.listen(PORT, HOST, () => log.info({ host: HOST, port: PORT }, 'adapter listening'))
 
   try {
     await start()
