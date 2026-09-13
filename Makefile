@@ -1,9 +1,17 @@
-.PHONY: up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api
+.PHONY: up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api deps-reconcile
+
+# Prefer the project venv, so these targets work from a terminal where it was
+# never activated. macOS has no bare `python`, only `python3`, so calling
+# `python` directly fails with "No such file or directory" the moment you open
+# a new shell — and this project wants several terminals open at once.
+PYTHON := $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; \
+                  elif command -v python3 >/dev/null 2>&1; then echo python3; \
+                  else echo python; fi)
 
 # Minimal dependency set for authcheck + reconcile: no psycopg, no fastapi.
 # Enough to verify credentials and numbers before any infrastructure exists.
 deps-reconcile:
-	pip install growwapi pyotp pydantic pydantic-settings httpx
+	$(PYTHON) -m pip install growwapi pyotp pydantic pydantic-settings httpx
 
 up:
 	docker compose up -d --build
@@ -29,42 +37,42 @@ migrate:
 
 # Downloads the master AND loads it into Postgres — needs the database running.
 instruments:
-	python -m app.tools.instruments refresh
+	$(PYTHON) -m app.tools.instruments refresh
 
 # Just fetches the CSV. No database needed, which is what reconcile wants.
 instruments-download:
-	python -m app.tools.instruments download
+	$(PYTHON) -m app.tools.instruments download
 
 # Check every prerequisite and name the fix for each failure.
 doctor:
-	python scripts/doctor.py
+	$(PYTHON) scripts/doctor.py
 
 # Verify Groww credentials on their own, before anything else.
 authcheck:
-	python scripts/authcheck.py
+	$(PYTHON) scripts/authcheck.py
 
 # Pull live holdings/positions and print computed P&L against the app.
 # Spec §5.3: portfolio value must match the Groww app to the rupee before you trust anything.
 # Downloads the instrument master by itself if absent.
 reconcile:
-	python scripts/reconcile.py
+	$(PYTHON) scripts/reconcile.py
 
 eval:
-	python eval/run.py
+	$(PYTHON) eval/run.py
 
 test:
-	pytest -q
+	$(PYTHON) -m pytest -q
 
 lint:
-	ruff check app eval scripts tests
-	ruff format --check app eval scripts tests
+	$(PYTHON) -m ruff check app eval scripts tests
+	$(PYTHON) -m ruff format --check app eval scripts tests
 
 # The three app processes. Run each in its own terminal from the repo root.
 adapter:
 	cd adapter && npm start
 
 worker:
-	python -m app.worker
+	$(PYTHON) -m app.worker
 
 api:
-	uvicorn app.main:app --port 8000
+	$(PYTHON) -m uvicorn app.main:app --port 8000

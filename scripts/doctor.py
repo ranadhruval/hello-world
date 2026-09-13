@@ -44,6 +44,33 @@ def port_open(url: str, default_port: int) -> bool:
         return False
 
 
+# Shipped in .env.example. Passing the format check while being unroutable is
+# the worst case: the link is generated, texted, and simply does not open.
+PLACEHOLDER_HOSTS = ("example.in", "example.com", "example.org", "desk.yourdomain")
+
+
+def _base_url_status(url: str) -> tuple[str, str]:
+    """PUBLIC_BASE_URL must be reachable from a phone, not merely well-formed."""
+    if not url.startswith("http"):
+        return FAIL, f"{url!r} is not a URL"
+
+    host = urlparse(url).hostname or ""
+    if any(p in url for p in PLACEHOLDER_HOSTS):
+        return FAIL, f"{url} is the placeholder from .env.example — set your real tunnel or LAN URL"
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return FAIL, f"{url} — your phone cannot reach localhost; use a LAN IP or a tunnel"
+
+    try:
+        import httpx
+
+        httpx.get(f"{url.rstrip('/')}/health", timeout=5)
+        return OK, f"{url} reachable"
+    except Exception:
+        # Unreachable from here is not proof it is unreachable from the phone
+        # (split-horizon DNS, a LAN address on another interface), so warn.
+        return WARN, f"{url} did not respond to /health — confirm it opens on your phone"
+
+
 def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
     print(f"\nGroww desk preflight\n{'─' * 60}")
 
@@ -100,11 +127,7 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
     else:
         check("LINK_SECRET", FAIL, "set any long random string — it signs the link tokens")
 
-    if cfg.public_base_url.startswith("http") and "localhost" not in cfg.public_base_url:
-        check("PUBLIC_BASE_URL", OK, cfg.public_base_url)
-    else:
-        check("PUBLIC_BASE_URL", WARN,
-              f"{cfg.public_base_url} — your phone cannot reach localhost; use a LAN IP or tunnel")
+    check("PUBLIC_BASE_URL", *_base_url_status(cfg.public_base_url))
 
     # ---- infrastructure ----
     dsn = cfg.database_url.replace("postgresql+psycopg://", "postgresql://")
