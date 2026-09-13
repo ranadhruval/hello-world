@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -106,13 +107,32 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
               f"{cfg.public_base_url} — your phone cannot reach localhost; use a LAN IP or tunnel")
 
     # ---- infrastructure ----
-    if port_open(cfg.redis_url, 6379):
+    dsn = cfg.database_url.replace("postgresql+psycopg://", "postgresql://")
+    redis_up = port_open(cfg.redis_url, 6379)
+    pg_up = port_open(dsn, 5432)
+
+    # Only relevant when something is actually down — someone running Postgres
+    # and Redis from Homebrew has no Docker and should not be told to install it.
+    if not (redis_up and pg_up):
+        if not shutil.which("docker"):
+            check("docker", WARN,
+                  "not installed — either `brew install --cask docker`, or run postgres "
+                  "and redis from Homebrew (see docs/RUNBOOK.md §3)")
+        elif subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode:
+            # The distinction that matters: telling someone to run
+            # `docker compose up -d` against a stopped daemon is a loop.
+            check("docker", FAIL,
+                  "Docker Desktop is installed but not running — `open -a Docker`, "
+                  "wait for the whale icon, then retry")
+        else:
+            check("docker", OK, "daemon running")
+
+    if redis_up:
         check("redis", OK, cfg.redis_url)
     else:
         check("redis", FAIL, "docker compose up -d redis   (or: brew services start redis)")
 
-    dsn = cfg.database_url.replace("postgresql+psycopg://", "postgresql://")
-    if not port_open(dsn, 5432):
+    if not pg_up:
         check("postgres", FAIL, "docker compose up -d postgres")
     else:
         try:

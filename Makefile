@@ -14,8 +14,18 @@ down:
 logs:
 	docker compose logs -f --tail=100
 
+# Compose mounts schema.sql into /docker-entrypoint-initdb.d, so on the Docker
+# path the schema already exists after the first `up` and this is a no-op.
+# It still matters for the Homebrew path, and for applying schema changes
+# later — the named volume persists, so initdb never runs a second time.
+# Docker Desktop does not put psql on the host PATH, hence the fallback.
 migrate:
-	psql "$${DATABASE_URL_PSQL:-postgresql://groww:groww@localhost:5432/growwdesk}" -f app/store/schema.sql
+	@if command -v psql >/dev/null 2>&1; then \
+	  psql "$${DATABASE_URL_PSQL:-postgresql://groww:groww@localhost:5432/growwdesk}" -f app/store/schema.sql; \
+	else \
+	  echo "psql not on PATH — applying the schema inside the postgres container"; \
+	  docker compose exec -T postgres psql -U groww -d growwdesk < app/store/schema.sql; \
+	fi
 
 # Downloads the master AND loads it into Postgres — needs the database running.
 instruments:
