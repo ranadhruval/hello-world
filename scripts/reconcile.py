@@ -33,7 +33,7 @@ from growwapi import GrowwAPI  # noqa: E402
 
 from app.auth.broker import _access_token  # noqa: E402
 from app.render.templates import inr, signed  # noqa: E402
-from app.tools.instruments import InstrumentIndex  # noqa: E402
+from app.tools.instruments import InstrumentIndex, ensure_csv  # noqa: E402
 from app.tools.pnl import (  # noqa: E402
     Basis,
     holding_pnl,
@@ -123,15 +123,21 @@ def reconcile_holdings(groww: GrowwAPI, index: InstrumentIndex) -> float:
 
 def reconcile_positions(groww: GrowwAPI) -> None:
     """The heart of it: both basis conventions, side by side."""
-    positions: list[Position] = []
+    # Dedupe across segment calls. If Groww ignores the segment filter on any
+    # of them the same leg comes back more than once, and concatenating would
+    # silently double the totals.
+    seen: dict[tuple[str, str], Position] = {}
     for segment in ("FNO", "CASH", "COMMODITY"):
         try:
             payload = groww.get_positions_for_user(segment=segment, timeout=10)
         except Exception as exc:  # MCX portfolio parity is Appendix B item 1
             print(f"  ! {segment} positions unavailable: {type(exc).__name__}: {exc}")
             continue
-        positions.extend(Position.from_api(d) for d in rows(payload, "positions"))
+        for d in rows(payload, "positions"):
+            p = Position.from_api(d)
+            seen.setdefault((p.trading_symbol, p.segment or segment), p)
 
+    positions = list(seen.values())
     live = [p for p in positions if (p.credit_quantity - p.debit_quantity) != 0]
     if not live:
         print("No open positions.\n")
@@ -199,12 +205,44 @@ def reconcile_margin(groww: GrowwAPI) -> None:
 """)
 
 
-def main() -> int:
-    if not CSV.exists():
-        sys.exit(f"instrument master missing at {CSV} — run `make instruments` first")
+def verify_day_change(groww: GrowwAPI, index: InstrumentIndex) -> None:
+    """Is ohlc.close the previous close?
 
+    If it is, day change can be derived from one batched get_ohlc call instead
+    of one get_quote per holding — 9 Live Data calls down to 2 on the portfolio
+    path. Worth one check here rather than guessing in dispatch.
+    """
+    probes = [s for s in ("RELIANCE", "INFY", "HDFCBANK") if index.by_key.get(("NSE", "CASH", s))]
+    if not probes:
+        return
+
+    print("DAY-CHANGE DERIVATION")
+    print(RULE)
+    print(f"{'SYMBOL':<14}{'LTP':>11}{'OHLC.CLOSE':>13}{'LTP-CLOSE':>12}{'day_change':>12}{'':>8}")
+    print(RULE)
+    for symbol in probes:
+        try:
+            q = groww.get_quote(trading_symbol=symbol, exchange="NSE", segment="CASH", timeout=10)
+        except Exception as exc:
+            print(f"{symbol:<14}  {type(exc).__name__}: {exc}")
+            continue
+        ltp = float(q.get("last_price") or 0.0)
+        close = float((q.get("ohlc") or {}).get("close") or 0.0)
+        stated = float(q.get("day_change") or 0.0)
+        derived = ltp - close
+        match = "match" if abs(derived - stated) < 0.01 else "DIFFERS"
+        print(f"{symbol:<14}{ltp:>11.2f}{close:>13.2f}{derived:>12.2f}{stated:>12.2f}{match:>8}")
+
+    print("""
+  >> If every row says "match", ohlc.close is the previous close and the
+     portfolio path can batch day change via get_ohlc. If any row differs,
+     keep the per-symbol get_quote.
+""")
+
+
+def main() -> int:
     print("\nLoading instrument master…")
-    index = InstrumentIndex.from_csv(CSV)
+    index = InstrumentIndex.from_csv(ensure_csv(CSV))
     print(f"  {len(index)} instruments\n")
 
     groww = connect()
@@ -213,6 +251,7 @@ def main() -> int:
     reconcile_holdings(groww, index)
     reconcile_positions(groww)
     reconcile_margin(groww)
+    verify_day_change(groww, index)
 
     print(RULE)
     print("Reconciliation is the Phase 1 gate. Do not build alerts on numbers")

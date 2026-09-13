@@ -75,11 +75,26 @@ bite:
   **unresolved until you run the reconciliation**.
 
 ```bash
-make reconcile     # TOTP_TOKEN=... TOTP_SECRET=... required
+pip install growwapi pyotp pydantic pydantic-settings httpx   # or: make deps-reconcile
+
+export TOTP_TOKEN='your-api-key'
+export TOTP_SECRET='your-totp-secret'
+
+python scripts/authcheck.py     # credentials only — run this first
+python scripts/reconcile.py     # the actual comparison
 ```
 
-That prints both conventions side by side against your real book. Pin the one
-that matches the app in `pnl.py:DEFAULT_BASIS`.
+`authcheck.py` tests nothing but the token mint, and names the fix for each
+common failure (secret not base32, clock skew, wrong auth flow). Reconciliation
+loads a 136k-row master before it touches the network, so isolating auth keeps
+a credential problem from surfacing late and tangled up in other output.
+
+Neither needs a database, a `.env`, or Redis — that is why the dependency list
+above is shorter than `pip install -e .`. `reconcile.py` downloads the
+instrument master itself if it is absent.
+
+It prints both basis conventions side by side against your real book. Pin the
+one that matches the app in `pnl.py:DEFAULT_BASIS`.
 
 **This is the Phase 1 gate.** Portfolio value must match the Groww app to the
 rupee before a single alert gets built on top of it.

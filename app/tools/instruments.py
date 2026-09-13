@@ -504,16 +504,35 @@ ON CONFLICT (exchange, segment, trading_symbol) DO UPDATE SET
 
 
 def download(dest: Path) -> Path:
-    """Fetch the daily master. Run at 07:30 IST (spec §23)."""
+    """Fetch the daily master. Run at 07:30 IST (spec §23).
+
+    Writes to a temporary file and moves it into place, so an interrupted
+    download cannot leave a half-written master that parses to junk.
+    """
     import httpx
 
     dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
     with httpx.stream("GET", CSV_URL, timeout=120, follow_redirects=True) as r:
         r.raise_for_status()
-        with open(dest, "wb") as fh:
+        with open(tmp, "wb") as fh:
             for chunk in r.iter_bytes():
                 fh.write(chunk)
+    tmp.replace(dest)
     return dest
+
+
+def ensure_csv(path: Path) -> Path:
+    """Return the master, downloading it if absent.
+
+    Lets read-only consumers (reconcile, the REPL) work on a fresh clone.
+    data/instruments.csv is gitignored, so it is never present after a clone,
+    and downloading it needs no database.
+    """
+    if not path.exists():
+        log.info("instrument master missing, downloading %s", CSV_URL)
+        download(path)
+    return path
 
 
 def load_to_postgres(instruments: list[Instrument], dsn: str) -> int:
@@ -543,30 +562,37 @@ def load_to_postgres(instruments: list[Instrument], dsn: str) -> int:
     return len(rows)
 
 
+USAGE = "usage: python -m app.tools.instruments [download|refresh|stats] [csv-path]"
+
+
 def _main(argv: list[str]) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    cmd = argv[1] if len(argv) > 1 else "refresh"
+    cmd = argv[1] if len(argv) > 1 else "download"
     path = Path(argv[2]) if len(argv) > 2 else Path("data/instruments.csv")
 
-    if cmd == "refresh":
-        if not path.exists():
-            log.info("downloading %s", CSV_URL)
-            download(path)
+    # `download` needs no database, which is what reconciliation and the REPL
+    # want. Only `refresh` touches Postgres.
+    if cmd in {"download", "refresh"}:
+        log.info("downloading %s", CSV_URL)
+        download(path)
         instruments = read_csv(path)
-        log.info("parsed %d instruments from %s", len(instruments), path)
+        log.info("parsed %d instruments -> %s", len(instruments), path)
+
+        if cmd == "download":
+            return 0
 
         from app.config import settings
 
         dsn = settings().database_url.replace("postgresql+psycopg://", "postgresql://")
-        log.info("loaded %d rows", load_to_postgres(instruments, dsn))
+        log.info("loaded %d rows into postgres", load_to_postgres(instruments, dsn))
         return 0
 
     if cmd == "stats":
-        idx = InstrumentIndex.from_csv(path)
+        idx = InstrumentIndex.from_csv(ensure_csv(path))
         log.info("%d instruments, %d underlyings", len(idx), len(idx.by_underlying))
         return 0
 
-    log.error("usage: python -m app.tools.instruments [refresh|stats] [csv-path]")
+    log.error(USAGE)
     return 2
 
 
