@@ -74,5 +74,10 @@ adapter:
 worker:
 	$(PYTHON) -m app.worker
 
+# Binds loopback by default: with a tunnel, cloudflared connects outward and
+# the link page never needs to be exposed. Reaching it by LAN IP instead means
+# publishing a page that accepts credentials to the whole network, so that is
+# opt-in: make api HOST=0.0.0.0
+HOST ?= 127.0.0.1
 api:
-	$(PYTHON) -m uvicorn app.main:app --port 8000
+	$(PYTHON) -m uvicorn app.main:app --host $(HOST) --port 8000
