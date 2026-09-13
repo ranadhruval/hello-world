@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+.env
+.env.*
+!.env.example
+
+# Baileys WhatsApp session — this is a bearer token for the whole assistant (spec §24.1)
+adapter/session/
+adapter/auth_info_baileys/
+node_modules/
+
+# Instrument master snapshots
+data/instruments*.csv
+
+# Traces and logs
+logs/
+*.log
+
+.pytest_cache/
+.ruff_cache/

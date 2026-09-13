@@ -1,0 +1,15 @@
+{
+  "_comment": "INCOMPLETE — fixed-date national holidays only. Festival holidays (Holi, Id, Diwali/Muhurat, Dussehra, Guru Nanak Jayanti) move every year and are NOT listed here. Populate from the official list before relying on market-hours logic: https://www.nseindia.com/resources/exchange-communication-holidays. Spec §5.6: load the list annually, check it each January. A missing holiday makes the bot label a closed market as open.",
+  "_fixed_dates": ["Republic Day 26 Jan", "Maharashtra Day 1 May", "Independence Day 15 Aug", "Gandhi Jayanti 2 Oct", "Christmas 25 Dec"],
+  "2026": [
+    "2026-01-26",
+    "2026-05-01",
+    "2026-10-02",
+    "2026-12-25"
+  ],
+  "2027": [
+    "2027-01-26",
+    "2027-08-15",
+    "2027-10-02"
+  ]
+}
