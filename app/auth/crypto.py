@@ -13,9 +13,21 @@ KEY_BYTES = 32
 
 class Crypto:
     def __init__(self, key_b64: str) -> None:
-        key = base64.b64decode(key_b64)
+        if not key_b64:
+            raise ValueError(
+                "CRED_KEY is not set. Generate one with:\n"
+                "    python -m app.auth.crypto >> .env\n"
+                "Without it credentials cannot be encrypted, so the worker refuses to start."
+            )
+        try:
+            key = base64.b64decode(key_b64, validate=True)
+        except Exception as exc:
+            raise ValueError(f"CRED_KEY is not valid base64: {exc}") from exc
         if len(key) != KEY_BYTES:
-            raise ValueError("CRED_KEY must decode to 32 bytes (AES-256)")
+            raise ValueError(
+                f"CRED_KEY decodes to {len(key)} bytes, need {KEY_BYTES} for AES-256. "
+                "Regenerate with: python -m app.auth.crypto"
+            )
         self._aead = AESGCM(key)
 
     def encrypt(self, plaintext: str, aad: bytes | None = None) -> bytes:
@@ -34,4 +46,4 @@ def generate_key() -> str:
 
 
 if __name__ == "__main__":
-    print(generate_key())
+    print(f"CRED_KEY={generate_key()}")

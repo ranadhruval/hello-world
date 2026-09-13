@@ -25,7 +25,13 @@ services:
       interval: 5s
       retries: 10
 
+  # The app processes are behind a profile so `docker compose up -d` brings up
+  # infrastructure only. On a laptop you want adapter, worker and api running
+  # on the host: the adapter needs an interactive QR scan on first run, and a
+  # containerised worker would have to reach it through host.docker.internal.
+  # Use these on a Linux box where everything runs in one place.
   api:
+    profiles: ["full"]
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     env_file: [.env]
@@ -38,12 +44,15 @@ services:
       redis: {condition: service_healthy}
 
   worker:
+    profiles: ["full"]
     build: .
     command: python -m app.worker
     env_file: [.env]
     environment:
       DATABASE_URL: postgresql+psycopg://groww:groww@postgres:5432/growwdesk
       REDIS_URL: redis://redis:6379/0
+      BAILEYS_URL: http://host.docker.internal:3001
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

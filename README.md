@@ -131,6 +131,10 @@ Lot sizes come from the master and only from the master. NIFTY is 65 today.
 
 ## Running it
 
+**Full setup, fresh clone to texting your own number: [docs/RUNBOOK.md](docs/RUNBOOK.md).**
+`python scripts/doctor.py` checks every prerequisite and prints the command
+that fixes each failure.
+
 ```bash
 cp .env.example .env && chmod 600 .env
 python -m app.auth.crypto >> .env        # generates CRED_KEY

@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate instruments instruments-download authcheck eval test lint reconcile shell
+.PHONY: up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api
 
 # Minimal dependency set for authcheck + reconcile: no psycopg, no fastapi.
 # Enough to verify credentials and numbers before any infrastructure exists.
@@ -25,6 +25,10 @@ instruments:
 instruments-download:
 	python -m app.tools.instruments download
 
+# Check every prerequisite and name the fix for each failure.
+doctor:
+	python scripts/doctor.py
+
 # Verify Groww credentials on their own, before anything else.
 authcheck:
 	python scripts/authcheck.py
@@ -44,3 +48,13 @@ test:
 lint:
 	ruff check app eval scripts tests
 	ruff format --check app eval scripts tests
+
+# The three app processes. Run each in its own terminal from the repo root.
+adapter:
+	cd adapter && npm start
+
+worker:
+	python -m app.worker
+
+api:
+	uvicorn app.main:app --port 8000
