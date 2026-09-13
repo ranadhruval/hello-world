@@ -1,9 +1,21 @@
 import asyncio
+from unittest import mock
+
+import pytest
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.channel.base import InboundMessage, OutboundMessage
 from app.channel.console import ConsoleChannel, inbound
 from app.tools.instruments import InstrumentIndex
-from app.worker import Debouncer, Deduper, Worker, _to_inbound
+from app.worker import (
+    BLOCK_MS,
+    SOCKET_TIMEOUT_S,
+    Debouncer,
+    Deduper,
+    Worker,
+    _to_inbound,
+    consume,
+)
 
 
 class FakeStore:
@@ -237,3 +249,68 @@ def test_to_inbound_handles_str_fields():
 
 def test_to_inbound_survives_a_missing_timestamp():
     assert _to_inbound({"wa_id": "91", "text": "hi"}).ts == 0
+
+
+# ---- blocking-read timeouts ----------------------------------------
+
+
+def test_socket_timeout_outlasts_the_block_window():
+    """XREADGROUP holds the connection for BLOCK_MS. If the client read
+    timeout is not longer, every idle poll raises and the worker looks broken
+    while being completely healthy."""
+    assert SOCKET_TIMEOUT_S > BLOCK_MS / 1000
+
+
+async def test_idle_timeout_is_not_treated_as_a_failure():
+    """A blocking read that finds nothing is the normal path — it must not
+    log a traceback or back off."""
+    calls = {"reads": 0, "sleeps": 0}
+
+    class TimingOutRedis:
+        async def xgroup_create(self, *a, **kw):
+            return True
+
+        async def xreadgroup(self, *a, **kw):
+            calls["reads"] += 1
+            if calls["reads"] <= 3:
+                raise RedisTimeoutError("Timeout reading from localhost:6379")
+            raise asyncio.CancelledError
+
+        async def xack(self, *a, **kw):
+            return 1
+
+    async def counting_sleep(_):
+        calls["sleeps"] += 1
+
+    with mock.patch("app.worker.asyncio.sleep", counting_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await consume(TimingOutRedis(), object(), "test")
+
+    assert calls["reads"] == 4
+    assert calls["sleeps"] == 0, "an idle timeout must not trigger the retry backoff"
+
+
+async def test_a_real_read_error_still_backs_off():
+    calls = {"reads": 0, "sleeps": 0}
+
+    class BrokenRedis:
+        async def xgroup_create(self, *a, **kw):
+            return True
+
+        async def xreadgroup(self, *a, **kw):
+            calls["reads"] += 1
+            if calls["reads"] <= 2:
+                raise ConnectionError("connection refused")
+            raise asyncio.CancelledError
+
+        async def xack(self, *a, **kw):
+            return 1
+
+    async def counting_sleep(_):
+        calls["sleeps"] += 1
+
+    with mock.patch("app.worker.asyncio.sleep", counting_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await consume(BrokenRedis(), object(), "test")
+
+    assert calls["sleeps"] == 2

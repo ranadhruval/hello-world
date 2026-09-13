@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path as FilePath
 
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from app.channel.base import Channel, InboundMessage, OutboundMessage
 from app.config import settings
 from app.router.fastpath import Intent, Path, classify
@@ -214,6 +216,15 @@ class Worker:
 STREAM = "inbound"
 GROUP = "workers"
 
+# XREADGROUP holds the connection server-side for this long when the stream is
+# empty, which is most of the time.
+BLOCK_MS = 5000
+
+# The client read timeout has to outlast that block. redis-py's from_url()
+# default does not, so every idle poll raised TimeoutError — an idle worker
+# produced a traceback every few seconds and looked broken while being fine.
+SOCKET_TIMEOUT_S = BLOCK_MS / 1000 + 5
+
 
 async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
     """Drain the inbound stream.
@@ -230,7 +241,13 @@ async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
     log.info("consuming %s as %s", STREAM, consumer)
     while True:
         try:
-            batch = await redis.xreadgroup(GROUP, consumer, {STREAM: ">"}, count=10, block=5000)
+            batch = await redis.xreadgroup(
+                GROUP, consumer, {STREAM: ">"}, count=10, block=BLOCK_MS
+            )
+        except RedisTimeoutError:
+            # A blocking read that found nothing. The normal idle path, not a
+            # failure, so it gets no traceback and no backoff.
+            continue
         except Exception:
             log.exception("stream read failed; retrying in 2s")
             await asyncio.sleep(2)
@@ -280,7 +297,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     index = InstrumentIndex.from_csv(ensure_csv(FilePath("data/instruments.csv")))
     log.info("instrument master: %d instruments", len(index))
 
-    redis = aioredis.from_url(cfg.redis_url)
+    redis = aioredis.from_url(cfg.redis_url, socket_timeout=SOCKET_TIMEOUT_S)
     backend = RedisBackend(redis)
     store = Store()
     broker = TokenBroker(store, Crypto(cfg.cred_key))
