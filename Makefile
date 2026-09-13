@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api deps-reconcile
+.PHONY: up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api deps-reconcile replay shadow
 
 # Prefer the project venv, so these targets work from a terminal where it was
 # never activated. macOS has no bare `python`, only `python3`, so calling
@@ -27,13 +27,19 @@ logs:
 # It still matters for the Homebrew path, and for applying schema changes
 # later — the named volume persists, so initdb never runs a second time.
 # Docker Desktop does not put psql on the host PATH, hence the fallback.
+# Applies Phase 1 then Phase 2. Both are idempotent (everything is
+# IF NOT EXISTS), so re-running is safe — but note that column *changes* to an
+# existing table are not handled by either.
 migrate:
-	@if command -v psql >/dev/null 2>&1; then \
-	  psql "$${DATABASE_URL_PSQL:-postgresql://groww:groww@localhost:5432/growwdesk}" -f app/store/schema.sql; \
-	else \
-	  echo "psql not on PATH — applying the schema inside the postgres container"; \
-	  docker compose exec -T postgres psql -U groww -d growwdesk < app/store/schema.sql; \
-	fi
+	@for f in app/store/schema.sql app/store/schema_phase2.sql; do \
+	  echo "applying $$f"; \
+	  if command -v psql >/dev/null 2>&1; then \
+	    psql "$${DATABASE_URL_PSQL:-postgresql://groww:groww@localhost:5432/growwdesk}" -f $$f; \
+	  else \
+	    echo "psql not on PATH — applying inside the postgres container"; \
+	    docker compose exec -T postgres psql -U groww -d growwdesk < $$f; \
+	  fi; \
+	done
 
 # Downloads the master AND loads it into Postgres — needs the database running.
 instruments:
@@ -81,3 +87,15 @@ worker:
 HOST ?= 127.0.0.1
 api:
 	$(PYTHON) -m uvicorn app.main:app --host $(HOST) --port 8000
+
+# Replay a recorded shadow day through the current gate. Alert thresholds
+# cannot be tuned live — a change otherwise costs a week of market to judge.
+replay:
+	$(PYTHON) scripts/replay.py $(if $(DAY),--day $(DAY),)
+
+# Today's shadow report: what the watcher would have sent, and what it held
+# back and why. Stays a local file on purpose.
+shadow:
+	@$(PYTHON) -c "from app.watcher.shadow import ShadowLog; \
+	from datetime import date; \
+	print(ShadowLog().report(date.today()))"

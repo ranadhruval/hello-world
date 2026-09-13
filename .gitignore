@@ -24,3 +24,7 @@ logs/
 
 .pytest_cache/
 .ruff_cache/
+
+# Shadow-mode logs and reports: local tuning artefacts, and they contain
+# position sizes. Never committed.
+data/shadow/
