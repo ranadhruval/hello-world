@@ -8,6 +8,9 @@ dependencies = [
     "pyotp>=2.9.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
+    # The link page posts a form, and FastAPI's Form(...) refuses to even build
+    # the route without this. Missing it fails at import, not at request time.
+    "python-multipart>=0.0.20",
     "sqlalchemy>=2.0.36",
     "psycopg[binary]>=3.2.3",
     "alembic>=1.14.0",

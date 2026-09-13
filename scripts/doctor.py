@@ -103,6 +103,17 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
     else:
         check("python packages", OK)
 
+    # Importing the app is the only check that catches an import-time failure
+    # in the API — a missing Form dependency, a bad route decorator. Listing
+    # top-level packages does not: python-multipart is imported by FastAPI,
+    # not by us, and its absence only surfaces when a route is built.
+    try:
+        import app.main  # noqa: F401
+
+        check("api imports", OK)
+    except Exception as exc:
+        check("api imports", FAIL, f"{type(exc).__name__}: {str(exc).splitlines()[0]}")
+
     # ---- .env ----
     if not (ROOT / ".env").exists():
         check(".env", FAIL, "cp .env.example .env && chmod 600 .env")
