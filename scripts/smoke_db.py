@@ -112,6 +112,33 @@ async def run(dsn: str) -> int:
     claimed = await st.claim_outbox()
     ok("a superseded row is never delivered", [c.id for c in claimed] == [newer])
     ok("attempts counts attempts already made", claimed[0].attempts == 0)
+
+    # Regression: supersession used to run before the idempotency check, so a
+    # re-run retired the only pending row and then inserted nothing — the
+    # message vanished with no error anywhere. Silent, and therefore the worst
+    # kind. A duplicate enqueue must leave the original deliverable.
+    key2 = idempotency_key(u1, "brief.pre_market", "daily", datetime.date(2026, 9, 16))
+    fp2 = f"brief|{stamp}"
+    live = await st.enqueue_outbox(
+        u1,
+        rule_id="brief.pre_market",
+        fingerprint=fp2,
+        idempotency_key=key2,
+        body="good morning",
+        route="interrupt",
+        payload={},
+    )
+    dup = await st.enqueue_outbox(
+        u1,
+        rule_id="brief.pre_market",
+        fingerprint=fp2,
+        idempotency_key=key2,
+        body="good morning",
+        route="interrupt",
+        payload={},
+    )
+    ok("a duplicate enqueue is refused", dup is None)
+    ok("and does not cancel the original", live in [c.id for c in await st.claim_outbox(limit=50)])
     await st.finish_outbox(newer, OutboxState.SENT, channel_msg_id="wamid.1")
     ok("a sent interrupt spends the day's budget", await st.interrupts_today(u1) >= 1)
 

@@ -176,7 +176,6 @@ class Worker:
             await self._store.log_message(None, "out", out.text, channel_msg_id)
             await self._store.log_trace(in_id, str(route.path), str(route.intent))
 
-
     async def _account_intent(self, route, wa_id: str) -> OutboundMessage | None:
         """Handle meta.link / meta.unlink. Returns None for everything else."""
         if self._store is None:
@@ -230,6 +229,10 @@ BLOCK_MS = 5000
 # produced a traceback every few seconds and looked broken while being fine.
 SOCKET_TIMEOUT_S = BLOCK_MS / 1000 + 5
 
+# How often to look for queued alerts. Low enough that an interrupt feels
+# immediate, high enough that an idle desk is not hammering Postgres.
+OUTBOX_POLL_S = 5
+
 
 async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
     """Drain the inbound stream.
@@ -246,9 +249,7 @@ async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
     log.info("consuming %s as %s", STREAM, consumer)
     while True:
         try:
-            batch = await redis.xreadgroup(
-                GROUP, consumer, {STREAM: ">"}, count=10, block=BLOCK_MS
-            )
+            batch = await redis.xreadgroup(GROUP, consumer, {STREAM: ">"}, count=10, block=BLOCK_MS)
         except RedisTimeoutError:
             # A blocking read that found nothing. The normal idle path, not a
             # failure, so it gets no traceback and no backoff.
@@ -315,13 +316,19 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     cache, limiter = Cache(backend), RateLimiter(backend)
     desks: dict[int, Desk] = {}
 
+    toolsets: dict[int, GrowwTools] = {}
+
+    async def tools_for(user_id: int) -> GrowwTools:
+        if user_id not in toolsets:
+            toolsets[user_id] = GrowwTools(broker, user_id, cache, limiter, CircuitBreaker())
+        return toolsets[user_id]
+
     async def desk_for(wa_id: str) -> Desk | None:
         user_id = await store.user_id_for(wa_id)
         if not await store.is_linked(user_id):
             return None
         if user_id not in desks:
-            tools = GrowwTools(broker, user_id, cache, limiter, CircuitBreaker())
-            desks[user_id] = Desk(tools, index)
+            desks[user_id] = Desk(await tools_for(user_id), index)
         return desks[user_id]
 
     worker = Worker(channel, index, desk_for, store=store, deduper=Deduper(redis))
@@ -329,7 +336,76 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     if not await channel.health():
         log.warning("adapter at %s is not connected — is it running?", cfg.baileys_url)
 
-    await asyncio.gather(consume(redis, worker), _refresh_instruments_daily(index))
+    # One process, four tasks. A separate watcher process is the right shape
+    # once a live market feed contends for the executor that GrowwTools uses,
+    # but with signals arriving over poll and a handful of users it would be
+    # two deployables and a token-sharing problem bought for nothing.
+    await asyncio.gather(
+        consume(redis, worker),
+        _drain_outbox(store, channel),
+        _run_schedule(store, index, tools_for),
+        _refresh_instruments_daily(index),
+    )
+
+
+async def _drain_outbox(store, channel) -> None:  # pragma: no cover - process loop
+    """Send queued alerts. The worker owns the channel, so it owns sending."""
+    from app.outbox import Drainer
+
+    drainer = Drainer(store, channel)
+    while True:
+        try:
+            await drainer.drain_once()
+        except Exception:
+            log.exception("outbox drain failed; retrying in %ss", OUTBOX_POLL_S)
+        await asyncio.sleep(OUTBOX_POLL_S)
+
+
+async def _run_schedule(store, index, tools_for) -> None:  # pragma: no cover - process loop
+    """The bookend briefs."""
+    from datetime import date, time
+
+    from app.market.calendar import assert_holidays_cover, now_ist
+    from app.outbox import idempotency_key
+    from app.watcher.briefs import POST_CLOSE, PRE_MARKET, deliver
+    from app.watcher.schedule import DailyScheduler, Job
+
+    # A missing holiday entry reads as "every weekday is a trading day", which
+    # would send a market brief on Diwali. Refuse to schedule rather than be
+    # silently wrong about whether the market is open.
+    assert_holidays_cover(now_ist().year)
+
+    async def enqueue(user_id: int, which: str, body: str, slots: dict) -> None:
+        today = date.today()
+        await store.enqueue_outbox(
+            user_id,
+            rule_id=which,
+            fingerprint=f"{which}|{today}",
+            idempotency_key=idempotency_key(user_id, which, "daily", today),
+            body=body,
+            route="interrupt",
+            payload=slots,
+        )
+
+    def job(name: str, at: time) -> Job:
+        async def run() -> None:
+            count = await deliver(
+                name, store=store, tools_for=tools_for, index=index, enqueue=enqueue
+            )
+            log.info("%s queued for %d users", name, count)
+
+        return Job(name=name, at=at, fn=run, timeout_s=300)
+
+    scheduler = DailyScheduler(
+        store,
+        [
+            job(PRE_MARKET, time(8, 45)),
+            # After the close, not at it: the last prints need a moment to
+            # settle, and a wrap quoting a stale close is worse than a late one.
+            job(POST_CLOSE, time(15, 45)),
+        ],
+    )
+    await scheduler.run()
 
 
 async def _refresh_instruments_daily(index: InstrumentIndex) -> None:  # pragma: no cover

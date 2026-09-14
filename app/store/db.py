@@ -296,6 +296,45 @@ class Store:
             )
             conn.commit()
 
+    async def suppressions_today(self, user_id: int) -> int:
+        """How many signals were held back today — the digest's honesty line."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) AS n FROM suppressions WHERE user_id = %s "
+                "AND created_at >= date_trunc('day', now())",
+                (user_id,),
+            )
+            return cur.fetchone()["n"]
+
+    async def record_suppression(
+        self,
+        user_id: int,
+        *,
+        rule_id: str,
+        entity: str,
+        fingerprint: str,
+        route: str,
+        score: float,
+        reason: str,
+        score_trace: list | None = None,
+    ) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO suppressions (user_id, rule_id, entity, fingerprint, route, "
+                "score, score_trace, reason) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    user_id,
+                    rule_id,
+                    entity,
+                    fingerprint,
+                    route,
+                    score,
+                    Jsonb(score_trace or []),
+                    reason,
+                ),
+            )
+            conn.commit()
+
     # ---- watch suggestions ------------------------------------------
 
     async def suggestions_for(self, user_id: int) -> list:
@@ -392,13 +431,10 @@ class Store:
         the real guarantee; this is just the polite path to it.
         """
         with self._connect() as conn, conn.cursor() as cur:
-            # A newer trigger for the same condition replaces the older unsent
-            # one rather than queueing behind it.
-            cur.execute(
-                "UPDATE outbox SET state = 'superseded' "
-                "WHERE user_id = %s AND fingerprint = %s AND state = 'pending'",
-                (user_id, fingerprint),
-            )
+            # Insert FIRST. Superseding before the idempotency check meant a
+            # re-run marked the only pending row superseded and then inserted
+            # nothing, silently dropping the message — the exact failure the
+            # outbox exists to prevent.
             cur.execute(
                 "INSERT INTO outbox (user_id, idempotency_key, rule_id, fingerprint, "
                 "payload, body, route, score, score_trace, state) "
@@ -418,8 +454,19 @@ class Store:
                 ),
             )
             row = cur.fetchone()
+            if row is None:
+                conn.rollback()
+                return None
+
+            # Only now retire older unsent rows for the same condition: a newer
+            # trigger replaces the earlier one rather than queueing behind it.
+            cur.execute(
+                "UPDATE outbox SET state = 'superseded' WHERE user_id = %s "
+                "AND fingerprint = %s AND state = 'pending' AND id <> %s",
+                (user_id, fingerprint, row["id"]),
+            )
             conn.commit()
-            return row["id"] if row else None
+            return row["id"]
 
     async def claim_outbox(self, limit: int = 10) -> list[OutboxEntry]:
         """Take pending rows that are due, marking them claimed in one statement.
