@@ -92,7 +92,11 @@ CREATE TABLE IF NOT EXISTS outbox (
   score            numeric,
   score_trace      jsonb,                  -- stage-by-stage, for tuning
   state            text NOT NULL DEFAULT 'pending',
-                   -- pending | sent | failed | superseded | shadow
+                   -- pending | sent | failed | superseded | shadow | unknown
+                   -- 'unknown' means the send may or may not have landed. A
+                   -- protective family retries it (a missed margin call costs
+                   -- money); everything else stops, preferring a miss to a
+                   -- repeat. See app/outbox.py.
   attempts         int NOT NULL DEFAULT 0,
   send_after       timestamptz NOT NULL DEFAULT now(),
   created_at       timestamptz NOT NULL DEFAULT now(),
@@ -144,3 +148,104 @@ CREATE TABLE IF NOT EXISTS job_runs (
   ok          boolean NOT NULL DEFAULT true,
   error       text
 );
+
+-- ------------------------------------------------------------ wa_aliases
+
+-- Every WhatsApp address we have ever seen for a user.
+--
+-- WhatsApp addresses one human in several ways -- phone JID, LID, device
+-- suffix -- and can switch mid-conversation. Without this table the switch
+-- creates a second users row: a second book, belief map, budget and link
+-- token for the same person. See app/channel/identity.py.
+--
+-- Rows are keyed on the canonical form (LIDs namespaced 'lid:<digits>' so an
+-- opaque id can never collide with a phone number sharing its digits).
+CREATE TABLE IF NOT EXISTS wa_aliases (
+  wa_id      text PRIMARY KEY,
+  user_id    bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source     text NOT NULL DEFAULT 'inbound',   -- inbound | link | merge
+  first_seen timestamptz NOT NULL DEFAULT now(),
+  last_seen  timestamptz NOT NULL DEFAULT now()
+);
+-- Proactive sends address the most recently seen alias.
+CREATE INDEX IF NOT EXISTS idx_wa_aliases_user ON wa_aliases (user_id, last_seen DESC);
+
+-- The brokerage account is the identity anchor a chat address cannot be.
+-- Baileys 6.7.24 knows about LIDs but persists no lid<->phone mapping, so no
+-- amount of string work relates a LID to a phone JID. Two chat addresses that
+-- link to the same Groww account, though, are provably one person -- which is
+-- what lets Store.bind_account merge them instead of guessing.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS account_fingerprint text;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account
+  ON users (account_fingerprint) WHERE account_fingerprint IS NOT NULL;
+
+-- --------------------------------------------------------------- notepad
+
+-- Per-job durable key/value carried across wake-ups: cursors, watermarks, the
+-- `since` token for the signal engine. Caps are a contract, not a suggestion --
+-- notepad contents are small by design because anything that grows unbounded
+-- across restarts eventually becomes the reason a job stops working.
+CREATE TABLE IF NOT EXISTS job_notepad (
+  job_name   text NOT NULL,
+  key        text NOT NULL,
+  value      text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (job_name, key)
+);
+
+-- ------------------------------------------------------------- incidents
+
+-- Our own failures, grouped so the same job failing the same way does not
+-- re-page on every tick. Keyed on (job_name, error signature): the same
+-- normalised error resolves to the same incident, so an acknowledged one stays
+-- quiet until the error text changes and mints a new one.
+CREATE TABLE IF NOT EXISTS incidents (
+  id           text PRIMARY KEY,          -- hash(job_name|signature)
+  job_name     text NOT NULL,
+  signature    text NOT NULL,             -- normalised error, digits/ids stripped
+  sample       text,                      -- one verbatim example, for debugging
+  state        text NOT NULL DEFAULT 'detected',   -- detected | alerted | closed
+  occurrences  int NOT NULL DEFAULT 1,
+  first_seen   timestamptz NOT NULL DEFAULT now(),
+  last_seen    timestamptz NOT NULL DEFAULT now(),
+  alerted_at   timestamptz,
+  closed_at    timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_open
+  ON incidents (job_name, last_seen DESC) WHERE state <> 'closed';
+
+-- Slot ledger: one row per scheduled instant actually dispatched. The unique
+-- key is what makes a recurring job at-most-once across a mid-run crash --
+-- next_run_at is advanced BEFORE dispatch, and this blocks a second fire.
+CREATE TABLE IF NOT EXISTS job_slots (
+  job_name         text NOT NULL,
+  scheduled_instant timestamptz NOT NULL,
+  dispatched_at    timestamptz NOT NULL DEFAULT now(),
+  ok               boolean,
+  error            text,
+  PRIMARY KEY (job_name, scheduled_instant)
+);
+
+-- ----------------------------------------------------- watch_suggestions
+
+-- Watches the desk proposes and the user accepts or dismisses. Nothing here
+-- ever creates a watch on its own: accepting inserts an ordinary `watches`
+-- row, so there is one watch engine and not two.
+--
+-- A dismissal is latched by dedup_key and never re-offered. Re-proposing
+-- something the user already said no to is how an assistant becomes a nag, and
+-- a nag gets muted entirely -- taking the useful proposals with it.
+CREATE TABLE IF NOT EXISTS watch_suggestions (
+  id          bigserial PRIMARY KEY,
+  user_id     bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dedup_key   text NOT NULL,
+  source      text NOT NULL,        -- asked_repeatedly | position_opened | catalog
+  reason      text NOT NULL,        -- shown to the user, in their terms
+  spec        jsonb NOT NULL,       -- the watches row this becomes on accept
+  state       text NOT NULL DEFAULT 'pending',   -- pending | accepted | dismissed
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  decided_at  timestamptz,
+  UNIQUE (user_id, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_pending
+  ON watch_suggestions (user_id, created_at DESC) WHERE state = 'pending';

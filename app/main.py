@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
 
 import pyotp
@@ -80,6 +81,7 @@ async def link_submit(
         )
         client = GrowwAPI(_access_token(access))
         await asyncio.to_thread(client.get_holdings_for_user, timeout=5)
+        fingerprint = await asyncio.to_thread(_account_fingerprint, client)
     except Exception as exc:
         log.warning("link attempt failed: %s", type(exc).__name__)
         return HTMLResponse(
@@ -90,13 +92,47 @@ async def link_submit(
         return HTMLResponse(_PAGE_EXPIRED, status_code=410)
 
     user_id = await st.user_id_for(wa_id)
+    if fingerprint:
+        # Merges this chat address into an existing user when the same
+        # brokerage account has been linked before under a different WhatsApp
+        # address — the only evidence that a LID and a phone JID are one
+        # person, since they share no digits.
+        user_id = await st.bind_account(user_id, fingerprint)
     await st.put_credentials(
         user_id,
         crypto().encrypt(totp_token.strip()),
         crypto().encrypt(totp_secret.strip()),
     )
-    log.info("linked user_id=%s", user_id)
+    log.info("linked user_id=%s account_known=%s", user_id, bool(fingerprint))
     return HTMLResponse(_PAGE_OK)
+
+
+# Keys Groww has used for the account identifier. Tried in order; the first
+# non-empty one wins.
+_ACCOUNT_KEYS = ("user_id", "userId", "groww_user_id", "growwUserId", "client_id", "clientId")
+
+
+def _account_fingerprint(client: GrowwAPI) -> str:
+    """A stable, non-reversible id for the linked brokerage account.
+
+    HMAC rather than the raw id so a database leak does not expose Groww
+    account identifiers, keyed on LINK_SECRET like the link tokens.
+
+    Returns "" when the profile carries nothing usable — the account then
+    simply cannot be merged, which is a lost convenience rather than a wrong
+    answer. Never invent an identifier: a fabricated one would merge two
+    unrelated people's books.
+    """
+    try:
+        profile = client.get_user_profile(timeout=5) or {}
+    except Exception as exc:
+        log.warning("profile lookup failed, skipping account fingerprint: %s", type(exc).__name__)
+        return ""
+    raw = next((str(profile[k]) for k in _ACCOUNT_KEYS if profile.get(k)), "")
+    if not raw:
+        log.warning("profile carried no known account key; merge unavailable for this link")
+        return ""
+    return hmac.new(settings().link_secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
 
 
 @app.post("/webhook/inbound")

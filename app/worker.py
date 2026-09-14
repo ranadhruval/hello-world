@@ -19,6 +19,7 @@ from pathlib import Path as FilePath
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.channel.base import Channel, InboundMessage, OutboundMessage
+from app.channel.identity import canonical_wa_id
 from app.config import settings
 from app.router.fastpath import Intent, Path, classify
 from app.tools.instruments import InstrumentIndex
@@ -270,9 +271,13 @@ async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
 
 def _to_inbound(fields: dict) -> InboundMessage:
     get = lambda k, d="": _decode(fields.get(k.encode(), fields.get(k, d)))  # noqa: E731
+    jid = get("jid")
+    # Identity is derived here and nowhere else. The adapter strips the JID to
+    # digits for its own logging, which cannot distinguish a LID from a phone
+    # number — so canonicalise from the full JID whenever we have one.
     return InboundMessage(
         channel_msg_id=get("channel_msg_id"),
-        wa_id=get("wa_id"),
+        wa_id=canonical_wa_id(jid or get("wa_id")),
         text=get("text") or None,
         ts=int(get("ts", "0") or 0),
         quoted_id=get("quoted_id") or None,

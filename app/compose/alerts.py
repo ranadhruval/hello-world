@@ -21,11 +21,15 @@ adapter flattens them to numbered text anyway.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from app.compose.guard import guard
+from app.compose.voice import advice_violations
 from app.render.templates import WARN, arrow, inr, pct, qty, signed
 from app.watcher.rules import Trigger
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -186,9 +190,25 @@ COMPOSERS = {
 
 
 def compose(trigger: Trigger) -> Alert:
-    """Render a trigger, or return an empty Alert if it cannot be rendered safely."""
+    """Render a trigger, or return an empty Alert if it cannot be rendered safely.
+
+    Two gates, both of which withhold rather than degrade: every number must
+    trace to a tool result (I1), and nothing may read as advice. A template
+    that drifts into "you should" is the same defect as a hallucinated figure —
+    it just fails a different audit.
+    """
     fn = COMPOSERS.get(trigger.rule_id)
     if fn is None:
         return Alert("", {}, trigger.rule_id)
     body, slots = fn(trigger)
-    return Alert(guard(body, slots, where=trigger.rule_id), slots, trigger.rule_id)
+    body = guard(body, slots, where=trigger.rule_id)
+    if body:
+        violations = advice_violations(body)
+        if violations:
+            log.error(
+                "advice-shaped phrasing in %s (%s); message withheld",
+                trigger.rule_id,
+                ", ".join(violations),
+            )
+            return Alert("", slots, trigger.rule_id)
+    return Alert(body, slots, trigger.rule_id)

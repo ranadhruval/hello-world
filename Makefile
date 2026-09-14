@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api deps-reconcile replay shadow
+.PHONY: smoke-db up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api deps-reconcile replay shadow
 
 # Prefer the project venv, so these targets work from a terminal where it was
 # never activated. macOS has no bare `python`, only `python3`, so calling
@@ -99,3 +99,9 @@ shadow:
 	@$(PYTHON) -c "from app.watcher.shadow import ShadowLog; \
 	from datetime import date; \
 	print(ShadowLog().report(date.today()))"
+
+# Exercise the Store against a real Postgres. Writes rows -- point it at a
+# throwaway database, never a live one. The unit suite uses fakes, which cannot
+# catch anything about the SQL itself.
+smoke-db:
+	$(PYTHON) scripts/smoke_db.py $(if $(DSN),--dsn $(DSN),)
