@@ -53,7 +53,9 @@ def main() -> int:
         bad("process", f"nothing answering at {cfg.baileys_url}")
         problems.append("Adapter is down. In adapter/: npm start   (exactly ONE terminal)")
     elif health.get("connected"):
-        ok("connected to WhatsApp")
+        # Our own JID says which addressing scheme this account is on, which
+        # decides how a reply has to be addressed.
+        ok("connected to WhatsApp", f"as {health.get('jid') or 'unknown'}")
     else:
         bad("connected to WhatsApp", "listening, but the WhatsApp socket is down")
         problems.append(
@@ -72,9 +74,10 @@ def main() -> int:
         # A LID chat can only be delivered to via the phone address behind it,
         # which the adapter learns from inbound messages. Without it a send is
         # accepted and silently never arrives.
-        lids = r.hgetall("lid_pn")
+        lids = {k.decode(): v.decode() for k, v in r.hgetall("lid_pn").items()}
         if lids:
-            ok("lid -> phone map", f"{len(lids)} address(es) known")
+            for lid, pn in list(lids.items())[:4]:
+                ok("lid -> phone", f"{lid} -> {pn}")
         else:
             warn("lid -> phone map", "empty — replies to a @lid chat may not arrive")
     except Exception as exc:  # noqa: BLE001
