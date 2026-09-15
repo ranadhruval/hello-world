@@ -157,6 +157,13 @@ async def run(dsn: str) -> int:
     await st.finish_slot(job, slot, ok=True)
     ok("the last-run date is durable", await st.job_last_run(job) == slot.date())
 
+    print("\nlink tokens")
+    tok = st.new_link_token("lid:4242", b"enc")
+    ok("a live token carries its identity", st.link_request_wa_id(tok) == b"enc")
+    ok("it burns once", st.consume_link_token(tok))
+    ok("and not twice", not st.consume_link_token(tok))
+    ok("a burnt token is gone", st.link_request_wa_id(tok) is None)
+
     print("\nnotepad")
     await st.notepad_set(job, "since", "cursor-1")
     await st.notepad_set(job, "since", "cursor-2")

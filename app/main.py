@@ -22,6 +22,7 @@ from app.auth.broker import access_token
 from app.auth.crypto import Crypto
 from app.config import settings
 from app.store.db import Store
+from app.worker import LINK_AAD
 
 log = logging.getLogger(__name__)
 app = FastAPI(title="Groww desk", docs_url=None, redoc_url=None)
@@ -54,7 +55,7 @@ async def health() -> JSONResponse:
 
 @app.get("/link", response_class=HTMLResponse)
 async def link_page(t: str = "") -> HTMLResponse:
-    if not t or store().link_request_wa_hash(t) is None:
+    if not t or store().link_request_wa_id(t) is None:
         return HTMLResponse(_PAGE_EXPIRED, status_code=410)
     return HTMLResponse(_PAGE_FORM.replace("{{TOKEN}}", t))
 
@@ -62,14 +63,16 @@ async def link_page(t: str = "") -> HTMLResponse:
 @app.post("/link", response_class=HTMLResponse)
 async def link_submit(
     token: str = Form(...),
-    wa_id: str = Form(...),
     totp_token: str = Form(...),
     totp_secret: str = Form(...),
 ) -> HTMLResponse:
     st = store()
-    wa_hash = st.link_request_wa_hash(token)
-    if wa_hash is None or wa_hash != hashlib.sha256(wa_id.encode()).hexdigest():
+    enc = st.link_request_wa_id(token)
+    if enc is None:
         return HTMLResponse(_PAGE_EXPIRED, status_code=410)
+    # The identity the worker minted this link for — a LID as often as a phone
+    # number now, which is why the page never asks the user for it.
+    wa_id = crypto().decrypt(enc, aad=LINK_AAD)
 
     # Test the credentials before storing anything. On failure show Groww's
     # actual error and store nothing.
@@ -88,7 +91,7 @@ async def link_submit(
             _PAGE_ERROR.replace("{{ERROR}}", f"{type(exc).__name__}: {exc}"), status_code=400
         )
 
-    if not st.consume_link_token(token, wa_id):
+    if not st.consume_link_token(token):
         return HTMLResponse(_PAGE_EXPIRED, status_code=410)
 
     user_id = await st.user_id_for(wa_id)
@@ -163,8 +166,6 @@ _PAGE_FORM = f"""<!doctype html><meta charset=utf-8>
 <p class=sub>Read-only. This desk never places orders.</p>
 <form method=post action=/link>
   <input type=hidden name=token value="{{{{TOKEN}}}}">
-  <label>Your WhatsApp number <span style="font-weight:400;color:#777">(digits only, with country code)</span></label>
-  <input name=wa_id inputmode=numeric placeholder="919876543210" required>
   <label>TOTP API key</label>
   <input name=totp_token required autocomplete=off>
   <label>TOTP secret</label>

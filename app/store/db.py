@@ -20,7 +20,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import psycopg
 from psycopg.rows import dict_row
@@ -583,8 +583,14 @@ class Store:
 
     # ---- link flow -------------------------------------------------
 
-    def new_link_token(self, wa_id: str) -> str:
-        """Signed, single-use, 10-minute TTL (spec §4.1)."""
+    def new_link_token(self, wa_id: str, wa_id_enc: bytes | None = None) -> str:
+        """Signed, single-use, 10-minute TTL (spec §4.1).
+
+        `wa_id_enc` is the identity the link is for, encrypted by the caller;
+        the link page recovers it so the user never has to know or retype
+        the address WhatsApp delivered them under. Expiry is computed by
+        Postgres so the clock is the same one that later checks it.
+        """
         cfg = settings()
         nonce = secrets.token_hex(8)
         payload = f"{wa_id}{nonce}{int(time.time())}"
@@ -592,33 +598,29 @@ class Store:
             :32
         ]
         self._exec(
-            "INSERT INTO link_requests (token, wa_id_hash, expires_at) VALUES (%s, %s, %s)",
-            (
-                token,
-                hashlib.sha256(wa_id.encode()).hexdigest(),
-                datetime.now() + timedelta(seconds=cfg.link_ttl_seconds),
-            ),
+            "INSERT INTO link_requests (token, wa_id_hash, wa_id_enc, expires_at) "
+            "VALUES (%s, %s, %s, now() + make_interval(secs => %s))",
+            (token, hashlib.sha256(wa_id.encode()).hexdigest(), wa_id_enc, cfg.link_ttl_seconds),
         )
         return token
 
-    def consume_link_token(self, token: str, wa_id: str) -> bool:
-        """Verify and burn. Returns False if expired, used, or for another chat."""
-        wa_hash = hashlib.sha256(wa_id.encode()).hexdigest()
-        hit = self._exec(
-            """UPDATE link_requests SET used = true
-               WHERE token = %s AND wa_id_hash = %s AND used = false AND expires_at > now()
-               RETURNING token""",
-            (token, wa_hash),
-        )
-        return hit is not None
-
-    def link_request_wa_hash(self, token: str) -> str | None:
+    def link_request_wa_id(self, token: str) -> bytes | None:
+        """The encrypted identity behind a live token; None if expired or used."""
         row = self._one(
-            "SELECT wa_id_hash FROM link_requests "
+            "SELECT wa_id_enc FROM link_requests "
             "WHERE token = %s AND used = false AND expires_at > now()",
             (token,),
         )
-        return row["wa_id_hash"] if row else None
+        return row["wa_id_enc"] if row else None
+
+    def consume_link_token(self, token: str) -> bool:
+        """Burn a token. Returns False if it was expired or already used."""
+        hit = self._exec(
+            "UPDATE link_requests SET used = true "
+            "WHERE token = %s AND used = false AND expires_at > now() RETURNING token",
+            (token,),
+        )
+        return hit is not None
 
     # ---- traces ----------------------------------------------------
 

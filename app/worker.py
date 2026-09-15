@@ -115,12 +115,14 @@ class Worker:
         index: InstrumentIndex,
         desk_for,
         store=None,
+        crypto=None,
         deduper: Deduper | None = None,
     ) -> None:
         self._channel = channel
         self._index = index
         self._desk_for = desk_for  # (wa_id) -> Desk | None when unlinked
         self._store = store
+        self._crypto = crypto
         self._dedupe = deduper or Deduper()
         self._debounce = Debouncer(settings().debounce_ms, self._process)
 
@@ -244,7 +246,8 @@ class Worker:
         """A link with no token is a dead link — /link returns 410 without one."""
         url = f"{settings().public_base_url}/link"
         if self._store is not None:
-            url = f"{url}?t={self._store.new_link_token(wa_id)}"
+            enc = self._crypto.encrypt(wa_id, aad=LINK_AAD) if self._crypto else None
+            url = f"{url}?t={self._store.new_link_token(wa_id, enc)}"
 
         greeting = (
             "Hi — I'm your Groww desk. I can tell you about your\n"
@@ -277,6 +280,7 @@ SOCKET_TIMEOUT_S = BLOCK_MS / 1000 + 5
 # How often to look for queued alerts. Low enough that an interrupt feels
 # immediate, high enough that an idle desk is not hammering Postgres.
 OUTBOX_POLL_S = 5
+LINK_AAD = b"link"  # binds the encrypted identity to the link flow
 
 
 async def consume(redis, worker: Worker, consumer: str = "worker-1") -> None:
@@ -356,7 +360,8 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     redis = aioredis.from_url(cfg.redis_url, socket_timeout=SOCKET_TIMEOUT_S)
     backend = RedisBackend(redis)
     store = Store()
-    broker = TokenBroker(store, Crypto(cfg.cred_key))
+    crypto = Crypto(cfg.cred_key)
+    broker = TokenBroker(store, crypto)
     channel = BaileysChannel(cfg.baileys_url)
     cache, limiter = Cache(backend), RateLimiter(backend)
     desks: dict[int, Desk] = {}
@@ -376,7 +381,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             desks[user_id] = Desk(await tools_for(user_id), index)
         return desks[user_id]
 
-    worker = Worker(channel, index, desk_for, store=store, deduper=Deduper(redis))
+    worker = Worker(channel, index, desk_for, store=store, crypto=crypto, deduper=Deduper(redis))
 
     if not await channel.health():
         log.warning("adapter at %s is not connected — is it running?", cfg.baileys_url)

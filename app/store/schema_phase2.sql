@@ -258,3 +258,11 @@ CREATE INDEX IF NOT EXISTS idx_suggestions_pending
 ALTER TABLE prefs ADD COLUMN IF NOT EXISTS briefs_paused boolean NOT NULL DEFAULT false;
 ALTER TABLE prefs ADD COLUMN IF NOT EXISTS brief_pre_market time;
 ALTER TABLE prefs ADD COLUMN IF NOT EXISTS brief_post_close time;
+
+-- The link page used to ask the user to retype their WhatsApp number and
+-- matched it against the hash minted for the inbound identity. WhatsApp now
+-- delivers most messages under a LID -- an opaque id whose digits are not the
+-- phone number -- so that match could never succeed. The identity is stored
+-- encrypted with the token instead, and the page asks for nothing but the
+-- Groww credentials.
+ALTER TABLE link_requests ADD COLUMN IF NOT EXISTS wa_id_enc bytea;

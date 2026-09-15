@@ -37,7 +37,7 @@ class FakeStore:
     async def delete_user_data(self, user_id):
         self.deleted.append(user_id)
 
-    def new_link_token(self, wa_id):
+    def new_link_token(self, wa_id, wa_id_enc=None):
         self.tokens_issued += 1
         return f"tok{self.tokens_issued}"
 
