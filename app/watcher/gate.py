@@ -54,7 +54,17 @@ INTERRUPT_AT = 0.75
 BATCH_AT = 0.45
 DIGEST_AT = 0.20
 
-P0_SEVERITY = 0.9  # always sends, ignores budget
+P0_SEVERITY = 0.9  # always sends, ignores budget, ignores quiet hours
+
+# A maximal instance of an irreversible family is P0 regardless of the rule's
+# base severity. Without this, margin.band_up (base 0.85) could never qualify,
+# so a *critical* margin band arriving in quiet hours was deferred to the
+# morning digest — by which time the position may have been liquidated. Found
+# by tests/test_restraint.py on its first run, which is what that file is for.
+#
+# Deliberately narrow: the magnitude must be maximal, which for margin means
+# the critical band alone (stressed scores 0.85 and still waits its turn).
+P0_PROTECTIVE_MAGNITUDE = 0.9
 DEFAULT_BUDGET = 6  # interrupts per day
 FATIGUE_PER_SENT = 0.12
 FATIGUE_FLOOR = 0.3
@@ -199,7 +209,9 @@ def score(trigger: Trigger, state: GateState) -> Decision:
     trace.append(("fatigue", s))
 
     frozen = tuple(trace)
-    p0 = r.base_severity >= P0_SEVERITY and trigger.magnitude >= 0.9
+    p0 = (r.base_severity >= P0_SEVERITY and trigger.magnitude >= 0.9) or (
+        r.family in PROTECTIVE and trigger.magnitude >= P0_PROTECTIVE_MAGNITUDE
+    )
 
     # 8 — hard suppressors. Order matters: an explicit mute beats everything
     # except a P0, and a cooldown beats the score entirely.

@@ -14,14 +14,18 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path as FilePath
 
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.channel.base import Channel, InboundMessage, OutboundMessage
 from app.channel.identity import canonical_wa_id
-from app.config import settings
+from app.config import IST, settings
+from app.render.prefs import confirm as pref_reply
 from app.router.fastpath import Intent, Path, classify
+from app.router.prefs import QUIET_TODAY_SENTINEL, QUIET_TODAY_UNTIL, PrefAction
+from app.router.prefs import parse as parse_pref
 from app.tools.instruments import InstrumentIndex
 
 log = logging.getLogger(__name__)
@@ -146,11 +150,17 @@ class Worker:
 
     async def _respond(self, msg: InboundMessage, text: str) -> None:
         started = time.monotonic()
+
+        # Control commands are matched before classification. "pause" through
+        # the fast-path gauntlet reaches the instrument resolver and gets
+        # answered with a stock, which is a memorable way to fail.
+        out = await self._pref_command(text, msg.wa_id)
         route = classify(text, resolves_to_instrument=lambda q: self._index.resolve(q).ok)
 
         # Account-level intents need the Store, which Desk deliberately does
         # not have — it answers about markets, not about accounts.
-        out = await self._account_intent(route, msg.wa_id)
+        if out is None:
+            out = await self._account_intent(route, msg.wa_id)
         if out is None:
             desk = await self._desk_for(msg.wa_id)
             out = (
@@ -175,6 +185,41 @@ class Worker:
             )
             await self._store.log_message(None, "out", out.text, channel_msg_id)
             await self._store.log_trace(in_id, str(route.path), str(route.intent))
+
+    async def _pref_command(self, text: str, wa_id: str) -> OutboundMessage | None:
+        """Handle pause / resume / snooze / brief-time. None if not one."""
+        if self._store is None:
+            return None
+        cmd = parse_pref(text)
+        if cmd is None:
+            return None
+
+        user_id = await self._store.user_id_for(wa_id)
+        until: datetime | None = None
+
+        if cmd.action is PrefAction.PAUSE:
+            await self._store.set_prefs(user_id, briefs_paused=True)
+        elif cmd.action is PrefAction.RESUME:
+            await self._store.set_prefs(user_id, briefs_paused=False, muted_until=None)
+        elif cmd.action is PrefAction.SNOOZE:
+            now = datetime.now(IST)
+            if cmd.minutes == QUIET_TODAY_SENTINEL:
+                until = (now + timedelta(days=1)).replace(
+                    hour=QUIET_TODAY_UNTIL.hour,
+                    minute=QUIET_TODAY_UNTIL.minute,
+                    second=0,
+                    microsecond=0,
+                )
+            else:
+                until = now + timedelta(minutes=cmd.minutes or 0)
+            await self._store.set_prefs(user_id, muted_until=until)
+        elif cmd.action is PrefAction.SET_BRIEF_TIME:
+            column = "brief_pre_market" if cmd.which == "pre_market" else "brief_post_close"
+            await self._store.set_prefs(user_id, **{column: cmd.at})
+
+        prefs = await self._store.get_prefs(user_id)
+        log.info("pref %s for user %s", cmd.action, user_id)
+        return OutboundMessage(wa_id=wa_id, kind="text", text=pref_reply(cmd, prefs, until=until))
 
     async def _account_intent(self, route, wa_id: str) -> OutboundMessage | None:
         """Handle meta.link / meta.unlink. Returns None for everything else."""
@@ -387,24 +432,47 @@ async def _run_schedule(store, index, tools_for) -> None:  # pragma: no cover - 
             payload=slots,
         )
 
-    def job(name: str, at: time) -> Job:
+    def job(kind: str, at: time, only_user: int | None = None) -> Job:
+        # The job's name is its slot-ledger key, so a per-user job needs a name
+        # of its own; the *kind* is what selects the renderer.
+        name = kind if only_user is None else f"{kind}:u{only_user}"
+
         async def run() -> None:
             count = await deliver(
-                name, store=store, tools_for=tools_for, index=index, enqueue=enqueue
+                kind,
+                store=store,
+                tools_for=tools_for,
+                index=index,
+                enqueue=enqueue,
+                only_user=only_user,
             )
-            log.info("%s queued for %d users", name, count)
+            log.info("%s queued for %d", name, count)
 
         return Job(name=name, at=at, fn=run, timeout_s=300)
 
-    scheduler = DailyScheduler(
-        store,
-        [
-            job(PRE_MARKET, time(8, 45)),
-            # After the close, not at it: the last prints need a moment to
-            # settle, and a wrap quoting a stale close is worse than a late one.
-            job(POST_CLOSE, time(15, 45)),
-        ],
-    )
+    async def jobs() -> list[Job]:
+        """Two default jobs, plus one for each user who moved their time.
+
+        A user with a custom time is excluded from the default job by their own
+        pref, so nobody gets two. At ten users this is a handful of jobs; if it
+        ever became hundreds, the shape to move to is one job that sweeps by
+        minute — not a scheduler change.
+        """
+        out = [job(PRE_MARKET, time(8, 45)), job(POST_CLOSE, time(15, 45))]
+        for user_id in await store.all_linked_users():
+            prefs = await store.get_prefs(user_id)
+            for kind, column in (
+                (PRE_MARKET, "brief_pre_market"),
+                (POST_CLOSE, "brief_post_close"),
+            ):
+                at = prefs.get(column)
+                if at:
+                    out.append(job(kind, at, only_user=user_id))
+        return out
+
+    # After the close, not at it: the last prints need a moment to settle, and
+    # a wrap quoting a stale close is worse than a late one.
+    scheduler = DailyScheduler(store, await jobs())
     await scheduler.run()
 
 

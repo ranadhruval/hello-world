@@ -262,7 +262,9 @@ def _expiring(positions: list[PositionPnl], index, within_days: int = 2) -> list
     return out
 
 
-async def deliver(which: str, *, store, tools_for, index, enqueue) -> int:
+async def deliver(
+    which: str, *, store, tools_for, index, enqueue, only_user: int | None = None
+) -> int:
     """Compose and queue a brief for every linked user. Returns how many went out.
 
     One user's failure never costs another theirs — a dead credential or a
@@ -278,8 +280,22 @@ async def deliver(which: str, *, store, tools_for, index, enqueue) -> int:
     render = RENDERERS[which]
     sent = 0
 
-    for user_id in await store.all_linked_users():
+    column = "brief_pre_market" if which == PRE_MARKET else "brief_post_close"
+    users = [only_user] if only_user is not None else await store.all_linked_users()
+
+    for user_id in users:
         try:
+            # Paused or snoozed means paused. A control command the scheduler
+            # ignores is worse than not offering the command at all.
+            if not await store.briefs_enabled(user_id):
+                continue
+
+            # A user who set their own time is served by their own job. The
+            # idempotency key would mask a double-send here, but only when the
+            # custom time is earlier than the default — relying on that would
+            # mean someone asking for 09:30 quietly gets 08:45 instead.
+            if only_user is None and (await store.get_prefs(user_id)).get(column):
+                continue
             tools = await tools_for(user_id)
             body, slots = render(await fetch(tools, index, store, user_id))
             if not body:

@@ -249,3 +249,12 @@ CREATE TABLE IF NOT EXISTS watch_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_suggestions_pending
   ON watch_suggestions (user_id, created_at DESC) WHERE state = 'pending';
+
+-- ----------------------------------------------------------- prefs (S2)
+
+-- A scheduled message you cannot move is one you eventually mute, and muting
+-- takes the useful messages with it. These are set over WhatsApp
+-- ("pause", "snooze 2h", "brief at 8:15") -- see app/router/prefs.py.
+ALTER TABLE prefs ADD COLUMN IF NOT EXISTS briefs_paused boolean NOT NULL DEFAULT false;
+ALTER TABLE prefs ADD COLUMN IF NOT EXISTS brief_pre_market time;
+ALTER TABLE prefs ADD COLUMN IF NOT EXISTS brief_post_close time;

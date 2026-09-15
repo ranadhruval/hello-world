@@ -150,6 +150,41 @@ class Store:
             )
             return [r["wa_id"] for r in cur.fetchall()]
 
+    # ---- preferences ------------------------------------------------
+
+    async def get_prefs(self, user_id: int) -> dict:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT * FROM prefs WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+            cur.execute(
+                "INSERT INTO prefs (user_id) VALUES (%s) ON CONFLICT DO NOTHING RETURNING *",
+                (user_id,),
+            )
+            conn.commit()
+            return dict(cur.fetchone() or {"user_id": user_id})
+
+    async def set_prefs(self, user_id: int, **fields) -> None:
+        if not fields:
+            return
+        await self.get_prefs(user_id)  # ensure the row exists
+        assignments = ", ".join(f"{k} = %s" for k in fields)
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE prefs SET {assignments} WHERE user_id = %s",
+                (*fields.values(), user_id),
+            )
+            conn.commit()
+
+    async def briefs_enabled(self, user_id: int) -> bool:
+        """False when paused or inside a snooze — checked before every brief."""
+        p = await self.get_prefs(user_id)
+        if p.get("briefs_paused"):
+            return False
+        until = p.get("muted_until")
+        return not (until and until > datetime.now(until.tzinfo))
+
     # ---- scheduler slots --------------------------------------------
 
     async def job_last_run(self, job_name: str) -> date | None:
