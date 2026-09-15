@@ -25,6 +25,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.book import read_book
 from app.render.templates import WARN, inr, signed
 from app.tools.instruments import InstrumentIndex
 from app.tools.pnl import MarginUtilisation, PortfolioPnl, PositionPnl
@@ -201,38 +202,15 @@ RENDERERS = {PRE_MARKET: pre_market, POST_CLOSE: post_close}
 
 
 async def fetch(tools, index, store, user_id: int) -> BriefData:
-    """Assemble a brief's inputs. The only I/O in this module.
-
-    A failure in any optional part costs that section, not the brief: margin is
-    the piece most likely to be unavailable and the least essential to the
-    reader, so it is fetched separately and allowed to be None.
-    """
-    import asyncio
-
-    from app.tools.pnl import margin_utilisation, portfolio_pnl, position_pnl
-
-    holdings, positions_raw = await asyncio.gather(tools.get_holdings(), tools.get_positions())
-    keys = [f"NSE_{h.trading_symbol}" for h in holdings]
-    ltps = await tools.get_ltp(keys, "CASH") if keys else {}
-    quotes = {k.split("_", 1)[1]: v for k, v in ltps.items()}
-
-    portfolio = portfolio_pnl(holdings, quotes, {})
-    positions = [
-        position_pnl(p, quotes.get(p.trading_symbol, p.credit_price or 0.0)) for p in positions_raw
-    ]
-
-    try:
-        margin = margin_utilisation(await tools.get_margin())
-    except Exception:  # noqa: BLE001 - a missing margin line beats no brief
-        margin = None
-
+    """Assemble a brief's inputs. The only I/O in this module."""
+    snap = await read_book(tools, index, margin=True)
     return BriefData(
-        book=build_book(portfolio, positions),
+        book=build_book(snap.portfolio, snap.positions),
         minutes_to_open=_minutes_to_open(),
-        portfolio=portfolio,
-        positions=positions,
-        margin=margin,
-        expiring=_expiring(positions, index),
+        portfolio=snap.portfolio,
+        positions=snap.positions,
+        margin=snap.margin,
+        expiring=_expiring(snap.positions, index),
         suppressed=await store.suppressions_today(user_id),
     )
 

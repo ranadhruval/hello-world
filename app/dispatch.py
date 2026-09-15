@@ -10,22 +10,19 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from app.book import SEGMENT_CASH, read_portfolio, read_positions, spot
 from app.channel.base import OutboundMessage
 from app.market import calendar
 from app.render import templates as tpl
 from app.router.fastpath import Intent, Route
 from app.tools.groww import GrowwTools, ToolError
 from app.tools.instruments import InstrumentIndex
-from app.tools.pnl import margin_utilisation, portfolio_pnl, position_pnl
-from app.tools.types import Holding, Instrument, Position
+from app.tools.pnl import margin_utilisation
+from app.tools.types import Holding, Position
 
 log = logging.getLogger(__name__)
 
 INDEX_BASKET = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"]
-
-SEGMENT_CASH = "CASH"
-SEGMENT_FNO = "FNO"
-SEGMENT_COMMODITY = "COMMODITY"
 
 
 @dataclass
@@ -69,9 +66,13 @@ class Desk:
     async def _handle(self, route: Route, wa_id: str) -> OutboundMessage:
         match route.intent:
             case Intent.PORTFOLIO_SUMMARY:
-                return _text(wa_id, tpl.portfolio_summary(await self._portfolio()))
+                return _text(
+                    wa_id, tpl.portfolio_summary(await read_portfolio(self._tools, self._index))
+                )
             case Intent.PORTFOLIO_DAY_CHANGE:
-                return _text(wa_id, tpl.portfolio_day_change(await self._portfolio()))
+                return _text(
+                    wa_id, tpl.portfolio_day_change(await read_portfolio(self._tools, self._index))
+                )
             case Intent.POSITIONS_OPEN:
                 return _text(wa_id, await self._positions())
             case Intent.MARGIN_AVAILABLE:
@@ -104,63 +105,16 @@ class Desk:
         )
         return Book(holdings, positions)
 
-    async def _portfolio(self):
-        holdings = await self._tools.get_holdings()
-        if not holdings:
-            return portfolio_pnl([], {}, {}, as_of=calendar.now_ist())
-
-        # Holdings carry no exchange field, so the LTP key has to be rebuilt
-        # from the instrument master: default NSE, fall back to BSE, warn if
-        # neither resolves (spec §5.3 gotcha 1).
-        keyed = {h.trading_symbol: self._equity_key(h.trading_symbol) for h in holdings}
-        resolved = {s: k for s, k in keyed.items() if k}
-
-        quotes = await self._tools.get_ltp(list(resolved.values()), SEGMENT_CASH)
-        ltps: dict[str, float] = {}
-        for symbol, key in resolved.items():
-            if key in quotes:
-                ltps[symbol] = quotes[key]
-
-        # get_ltp carries no day change, so the movers line needs quotes.
-        day_changes = await self._day_changes(list(ltps)[:8])
-        return portfolio_pnl(holdings, ltps, day_changes, as_of=calendar.now_ist())
-
-    async def _day_changes(self, symbols: list[str]) -> dict[str, float]:
-        async def one(symbol: str) -> tuple[str, float]:
-            inst = self._spot(symbol)
-            if inst is None:
-                return symbol, 0.0
-            try:
-                q = await self._tools.get_quote(symbol, inst.exchange, inst.segment)
-                return symbol, q.day_change
-            except ToolError:
-                return symbol, 0.0
-
-        return dict(await asyncio.gather(*(one(s) for s in symbols)))
-
     async def _positions(self) -> str:
-        positions = await self._tools.get_positions()
-        live = [p for p in positions if (p.credit_quantity - p.debit_quantity) != 0]
-        if not live:
+        rows = await read_positions(self._tools)
+        if not rows:
             return "No open positions."
-
-        keys = [f"{p.exchange or 'NSE'}_{p.trading_symbol}" for p in live]
-        segment = live[0].segment or SEGMENT_FNO
-        ltps = await self._tools.get_ltp(keys, segment)
-
-        rows = []
-        for p, key in zip(live, keys, strict=True):
-            ltp = ltps.get(key)
-            if ltp is None:
-                continue
-            rows.append(position_pnl(p, ltp))
-        rows.sort(key=lambda r: -abs(r.total))
         return tpl.positions_open(rows, ts=calendar.now_ist())
 
     async def _indices(self) -> str:
         quotes = []
         for symbol in INDEX_BASKET:
-            inst = self._spot(symbol)
+            inst = spot(self._index, symbol)
             if inst is None:
                 continue
             try:
@@ -188,23 +142,6 @@ class Desk:
         quote = await self._tools.get_quote(inst.trading_symbol, inst.exchange, inst.segment)
         closed = calendar.close_label(inst.segment, underlying=inst.underlying or "")
         return _text(wa_id, tpl.market_quote(quote, closed_label=closed))
-
-    # ---- instrument helpers ----------------------------------------
-
-    def _spot(self, symbol: str) -> Instrument | None:
-        for exchange in ("NSE", "BSE"):
-            for segment in (SEGMENT_CASH, SEGMENT_COMMODITY):
-                inst = self._index.by_key.get((exchange, segment, symbol))
-                if inst is not None:
-                    return inst
-        return None
-
-    def _equity_key(self, symbol: str) -> str | None:
-        inst = self._spot(symbol)
-        if inst is None:
-            log.warning("no instrument master entry for holding %s", symbol)
-            return None
-        return inst.ltp_key
 
 
 def _text(wa_id: str, body: str) -> OutboundMessage:

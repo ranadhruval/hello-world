@@ -10,6 +10,10 @@ Run it against a throwaway database, never a real one: it writes rows.
 
     make smoke-db                       # uses DATABASE_URL
     python scripts/smoke_db.py --dsn postgresql://groww@/growwdesk?host=/tmp&port=55432
+
+A hand-rolled throwaway cluster must be UTF-8 (`initdb -E UTF8`): under
+SQL_ASCII psycopg returns text columns as bytes and the enum checks fail
+for a reason that has nothing to do with the code. Docker's image is UTF-8.
 """
 
 from __future__ import annotations

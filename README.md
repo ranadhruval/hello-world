@@ -1,220 +1,310 @@
-# Groww desk
+# GR-2 · Groww desk
 
-A WhatsApp number you can text to ask what your money is doing — holdings,
-positions, orders, margin and live prices — answered in under six lines with
-the right number.
+A WhatsApp number you can text about your money — and which texts you first
+when something in your own book changes. Holdings, positions, orders, margin,
+live prices on request; a pre-market brief and a post-close wrap on schedule;
+intraday nudges through a gate that mostly says no.
 
-Phase 1 (reactive: you ask, it answers) is the scope here. Phase 2 makes it
-proactive: a watcher daemon holds state, detects deltas, and a gate decides
-whether it is worth interrupting you.
+Order placement is out of scope. Insight does all the work.
 
-## The invariants
+**New here?** Read this page, then [`docs/GR2_MEMO.md`](docs/GR2_MEMO.md) for
+the *why*, then [`docs/QUICKSTART.md`](docs/QUICKSTART.md) to run it.
 
-Five rules the build is organised around. Breaking any one produces a system
-that either breaks or lies.
+---
 
-1. **Numbers never originate in the LLM.** Every rupee figure, quantity,
-   strike and percentage is rendered from a typed object returned by a tool.
-   The model writes prose around numeric slots; it never emits a digit.
-2. **The LLM is not in the detection loop.** Polling, diffing and rule
-   evaluation are plain Python. The model interprets and phrases; it never
-   notices.
-3. **The chat channel is a surface, never a credential.** An inbound phone
-   number authenticates nothing. Tokens live server-side.
-4. **TOTP auth, not the API-key flow.** The API Key & Secret flow needs a
-   human clicking approve on the Groww console every morning. TOTP can be
-   automated, which is the only reason an always-on agent is possible.
-5. **Fail loudly.** A missing quote or an expired token produces a visible
-   error, never a plausible-looking message built on stale data.
+## How the pieces fit
 
-## What runs today
+```mermaid
+flowchart LR
+    phone([📱 user's WhatsApp])
+    subgraph node [adapter · Node]
+        baileys[Baileys session]
+    end
+    redis[(Redis<br/>inbound stream)]
+    subgraph py [worker · Python, one process]
+        consume[consume] --> desk[Desk<br/>reactive answers]
+        sched[DailyScheduler] --> briefs[briefs]
+        drain[OutboxDrainer]
+    end
+    pg[(Postgres)]
+    api[api · FastAPI<br/>/link page only]
+    groww[/Groww API/]
+    engine[/signal engine<br/>external, over contract/]
+
+    phone -- text --> baileys -- XADD --> redis -- XREADGROUP --> consume
+    desk -- reply --> baileys
+    desk <--> groww
+    briefs <--> groww
+    briefs -- enqueue --> pg
+    drain -- claim --> pg
+    drain -- /send --> baileys -- message --> phone
+    engine -. signals, not yet wired .-> py
+    phone -- opens link --> api -- credentials --> pg
+```
+
+Three processes, not four. A separate watcher was designed and then dropped:
+with signals arriving over poll and ten users, it would be a second deployable
+and a cross-process token-sharing problem for no payer. The seam to split later
+is `_run_schedule` and `_drain_outbox` in [`app/worker.py`](app/worker.py).
+
+---
+
+## The decision pipeline
+
+This is the part to understand. Everything else is plumbing around it.
+
+```mermaid
+flowchart TD
+    ext[/external signal<br/>mover · volume · news · filing/]
+    book[/book signal<br/>margin · expiry · delta · P&L/]
+    ext & book --> sig[Signal envelope<br/><code>watcher/signals.py</code><br/><i>missing is a value — never a zero</i>]
+    sig --> join[Exposure join<br/><code>watcher/exposure.py</code><br/>share of book · σ of own P&L · materiality]
+    join --> rules[Rules → Triggers<br/><code>watcher/rules.py</code><br/>9 deterministic rules, no model]
+    rules --> gate{Gate<br/><code>watcher/gate.py</code>}
+    gate -- ≥ 0.75 --> I[interrupt<br/>now, own message]
+    gate -- ≥ 0.45 --> B[batch<br/>held ≤15 min]
+    gate -- ≥ 0.20 --> D[digest<br/>evening wrap]
+    gate -- else --> S[silent<br/>ledger only]
+    I & B --> compose[compose<br/><code>compose/alerts.py</code><br/>STATE · SO WHAT · ACTION]
+    compose --> guard{NumericGuard<br/>+ voice check}
+    guard -- every number traces<br/>nothing reads as advice --> outbox[(outbox)]
+    guard -- fails --> withheld[withheld, logged loudly]
+    outbox --> drainer[OutboxDrainer] --> wa[WhatsApp]
+    drainer --> transcript[(messages<br/>with rule provenance)]
+    D --> wrap[post-close wrap:<br/>Held back N things today]
+    S --> supp[(suppressions<br/>with reason + score trace)]
+    supp -.-> wrap
+
+    style gate fill:#fde68a,stroke:#b45309
+    style guard fill:#fecaca,stroke:#b91c1c
+    style S fill:#e5e7eb,stroke:#6b7280
+```
+
+**Why the join is the product.** An external engine can say TITAN fell 3.2% on
+four times normal volume. Only we know the user holds 40 shares at ₹2,618, that
+it is 34% of their book, and that a 3.2% day is unremarkable for them. The same
+signal is an interruption for one person and noise for another.
+
+**Why the gate scores instead of asking a model.** OpenPoke — an open
+reimplementation of a well-regarded assistant — decides whether to interrupt you
+with one LLM call returning a boolean. On a public benchmark of 71 assistants it
+scores 7 on proactivity and **2 on restraint**. That benchmark's anchor for a 3
+is *"acts on everything, or on nothing"* — silence and spam score the same.
+Details: [`docs/research/GR2_SCORECARD_FINDINGS.md`](docs/research/GR2_SCORECARD_FINDINGS.md).
+
+### Inside the gate
+
+Seven multiplicative stages, every one recorded in `score_trace` — tuning needs
+to know *which* stage let something through, not that the total was 0.78.
+
+```mermaid
+flowchart LR
+    t[Trigger] --> s1[severity<br/>base × magnitude]
+    s1 --> s2[materiality<br/>vs this user's book]
+    s2 --> s3[timing<br/>minutes to close]
+    s3 --> s4[irreversibility<br/>by family]
+    s4 --> s5[confluence<br/>other rules on same name]
+    s5 --> s6[responsiveness<br/>learned, floored if protective]
+    s6 --> s7[fatigue<br/>1 − 0.12 × sent today]
+    s7 --> sup{hard suppressors}
+    sup -- muted / cooldown --> silent[silent]
+    sup -- quiet hours --> digest[digest]
+    sup -- budget spent --> batch[batch]
+    sup -- P0 --> interrupt[interrupt]
+    sup -- else --> route[route on score]
+```
+
+Two rules the learning loop is not allowed to break, both in
+[`watcher/gate.py`](app/watcher/gate.py):
+
+- **A protective family (margin, expiry, structure) is floored at 0.5
+  responsiveness.** Someone ignoring margin warnings is the last person whose
+  margin warnings should be suppressed.
+- **A maximal protective trigger is P0 regardless of base severity.** Found by
+  the restraint fixture on its first run: without it, a *critical* margin band
+  in quiet hours was deferred to the morning digest.
+
+### One signal, end to end
+
+```mermaid
+sequenceDiagram
+    participant E as signal engine
+    participant W as worker
+    participant G as gate
+    participant O as outbox (Postgres)
+    participant A as adapter
+    participant U as user
+    E->>W: news.item · TITAN · block deal
+    W->>W: join against book: 34% of holdings
+    W->>W: rule news.position_scoped → trigger (mag 0.7)
+    W->>G: score
+    G-->>W: batch 0.48 (confluence with volume spike lifted it)
+    W->>W: compose → NumericGuard → voice check
+    W->>O: enqueue (idempotency key, supersedes older pending)
+    O-->>W: id
+    Note over W,O: drainer runs every 5s
+    W->>O: claim (SKIP LOCKED, attempts+1)
+    W->>A: POST /send
+    A->>U: message
+    A-->>W: channel_msg_id
+    W->>O: sent
+    W->>O: messages row, intent=alert:news.position_scoped
+    Note over O: delivery is complete only now —<br/>a reply must land in a session that knows what was said
+```
+
+---
+
+## The five invariants
+
+Set before the first line of code. Nothing has been allowed to break them.
+
+| # | Rule | Enforced by |
+|---|---|---|
+| I1 | **Numbers never originate in the model.** | [`compose/guard.py`](app/compose/guard.py) — every numeric token in a message must trace to a tool value, or the message is withheld. It has caught a hardcoded constant in our own template. |
+| I2 | **The model is not in the detection loop.** | Rules, exposure and gate are arithmetic. `app/agent/` does not exist yet. |
+| I3 | **The chat channel is a surface, never a credential.** | Credentials on a signed link page, AES-256-GCM at rest ([`auth/`](app/auth/)). Identity anchors on the brokerage account, not the phone number ([`channel/identity.py`](app/channel/identity.py)). |
+| I4 | **TOTP, not the API-key flow.** | [`auth/broker.py`](app/auth/broker.py). The only auth path that can run unattended. |
+| I5 | **Fail loudly.** | A missing quote is named as missing, never zeroed. `Signal.number()` returns `None`, `require()` raises. |
+
+Plus one the domain adds: **describe, do not prescribe** —
+[`compose/voice.py`](app/compose/voice.py) rejects advice-shaped phrasing the
+same way the guard rejects an untraceable number.
+
+---
+
+## Module map
+
+Grouped by layer. Line counts so you know where the weight is.
 
 ```
 app/
-├── config.py            settings, rate-limit table, log redaction
-├── infra.py             cache, per-type-group token bucket, circuit breaker
-├── channel/             Channel protocol + console and Baileys implementations
-├── auth/                AES-256-GCM credential envelope, TOTP token broker
-├── tools/
-│   ├── types.py         typed objects every tool returns
-│   ├── pnl.py           the computation layer — see below
-│   ├── groww.py         cached, rate-limited, batched SDK wrappers
-│   ├── instruments.py   instrument master + resolver
-│   └── aliases.py       normalisation, Hinglish and commodity aliases
-├── render/templates.py  Indian digit grouping, six-line message templates
-├── router/fastpath.py   regex intent classifier, 22 intents off the model
-├── market/calendar.py   NSE/BSE/MCX hours, holidays, staleness labels
-├── dispatch.py          route -> tools -> typed object -> template
-├── worker.py            dedupe, debounce, typing indicator, traces
-├── main.py              FastAPI: health, the signed link page, webhook
-└── repl.py              drives the whole pipeline over stdin
+│
+├── ── inbound ───────────────────────────────────────────────────
+├── worker.py            422  dedupe · debounce · Worker · consume · process entrypoint
+├── router/fastpath.py   149  regex intent classifier, 22 intents off the model
+├── router/prefs.py      117  pause · snooze · brief at 8:15 — parsed before classify
+├── dispatch.py          157  Desk: route → tools → typed object → template
+│
+├── ── the book (what the user has) ──────────────────────────────
+├── book.py              126  one priced read of holdings + positions, for desk and briefs
+├── tools/groww.py       262  cached, rate-limited, batched SDK wrappers
+├── tools/pnl.py         233  P&L arithmetic — see "numbers the broker won't give you"
+├── tools/types.py       388  typed objects every tool returns
+├── tools/instruments.py 600  136k-row instrument master + fuzzy resolver
+├── tools/aliases.py      95  Hinglish and commodity aliases
+│
+├── ── the decision pipeline ─────────────────────────────────────
+├── watcher/signals.py   199  canonical inbound envelope (docs/SIGNAL_CONTRACT.md)
+├── watcher/exposure.py  198  the join: share of book, σ, materiality
+├── watcher/rules.py     500  9 rules on a declarative DSL
+├── watcher/gate.py      238  seven stages, four routes, two floors
+├── compose/alerts.py    214  STATE · SO WHAT · ACTION templates
+├── compose/guard.py     119  NumericGuard (I1)
+├── compose/voice.py      60  the voice contract + advice check
+├── outbox.py            223  state machine + Drainer; per-family retry on ambiguity
+│
+├── ── scheduled ────────────────────────────────────────────────
+├── watcher/briefs.py    378  pre-market · post-close · job registry
+├── watcher/schedule.py  159  slot-ledger scheduler: at-most-once across a crash
+├── watcher/shadow.py    176  run everything, send nothing, log to a local file
+│
+├── ── built, not yet wired (await the signal poll) ─────────────
+├── watcher/notepad.py    62  per-job cursors with byte caps
+├── watcher/suggestions.py 144  "want me to watch TITAN?" — consent-first, capped at 5
+├── obs/incidents.py     128  our own failures, paged once per signature
+│
+├── ── infrastructure ───────────────────────────────────────────
+├── store/db.py          647  Postgres, plain psycopg; schema.sql + schema_phase2.sql
+├── infra.py             152  Redis cache, per-type-group rate limiter, circuit breaker
+├── auth/                195  AES-256-GCM envelope · TOTP token broker
+├── channel/             284  Channel protocol · Baileys client · console · identity
+├── market/calendar.py   219  NSE/BSE/MCX hours, holidays, session state
+├── render/              354  Indian digit grouping, six-line templates, pref replies
+├── config.py             89  settings, rate-limit table, log redaction
+└── main.py              208  FastAPI: /health and the signed /link page
+
+adapter/index.ts         269  Baileys ↔ Redis bridge. Owns the WhatsApp session, nothing else.
 ```
 
-Not built yet: the LLM path (`agent/`), charts, and the intraday signal poll that
-feeds `watcher/rules.py`. Briefs, the outbox and the scheduler are live.
+**Reading order if you have an hour:** `watcher/gate.py` → `watcher/rules.py` →
+`watcher/exposure.py` → `compose/guard.py` → `outbox.py`. That is the product.
+The rest you can read when you need it.
 
-## Why P&L is computed here and not read from Groww
+---
+
+## Running and testing
+
+Setup, fresh clone to a message on your phone:
+**[`docs/QUICKSTART.md`](docs/QUICKSTART.md)**. `make doctor` checks every
+prerequisite and prints the fix for each failure.
+
+```bash
+make test        # 445 unit tests — hand-written fakes, no DB, no network
+make eval        # golden set: intent accuracy, numeric exactness (100% or ship-blocked)
+make smoke-db    # the Store against a REAL Postgres — this has caught bugs fakes cannot
+make shadow      # today's would-have-sent report
+make replay      # re-run a recorded day through the current gate
+```
+
+Four kinds of test, and the reason each exists:
+
+| Kind | Where | Catches |
+|---|---|---|
+| Unit, with fakes | `tests/` | policy and arithmetic |
+| Golden set | `eval/` | a rendered number ≠ an independently computed one |
+| **Real Postgres** | `scripts/smoke_db.py` | SQL bugs — found the outbox superseding its only pending row, and a timestamptz/naive crash |
+| **Restraint fixture** | `tests/test_restraint.py` | routing — one evening, three signals, exactly one should interrupt. Found the P0 gap above |
+
+---
+
+## Numbers the broker won't give you
 
 Groww's holdings payload has **no LTP and no current value**. Its positions
-payload has `realised_pnl` but **no unrealised P&L and no LTP**. So every P&L
-number this bot shows is computed in `app/tools/pnl.py` by joining position
-state to a live quote.
+payload has `realised_pnl` but **no unrealised P&L and no LTP**. Every P&L
+figure this desk shows is computed in [`tools/pnl.py`](app/tools/pnl.py) by
+joining position state to a live quote. Things that bite:
 
-That makes the arithmetic yours, and therefore yours to get wrong. Things that
-bite:
+- **Holdings carry no exchange field.** The `NSE_RELIANCE` key for `get_ltp` is
+  rebuilt from the instrument master — NSE first, BSE fallback.
+- **F&O quantities are units, not lots.** Never multiply by lot size for P&L.
+- **`credit_price` / `debit_price` are ambiguous** — per-unit average or
+  whole-leg notional. Getting it backwards scales every F&O number by the lot
+  size. Isolated behind `Basis`, and **unresolved until `make reconcile` runs
+  against a live book.** Do that before anyone else sees numbers.
 
-- **Holdings carry no exchange field.** The `NSE_RELIANCE` key for `get_ltp`
-  has to be rebuilt from the instrument master. Default NSE, fall back to BSE,
-  warn if neither resolves.
-- **F&O quantities are units, not lots.** Do not multiply by lot size for P&L.
-  Use lot size only to display "1 lot" and to validate quantities.
-- **Pledged quantity still counts toward value** but is not freely sellable.
-- **`credit_price` / `debit_price` are ambiguous** — per-unit average, or
-  whole-leg notional? The docs do not say, and getting it backwards scales
-  every F&O number by the lot size. It is isolated behind `Basis` and
-  **unresolved until you run the reconciliation**.
+The instrument master (`data/instruments.csv`, 136,779 rows) refreshes at 07:30
+IST as a scheduler job. Its resolver collapses dual listings on ISIN, keeps
+commodity aliases off the equity table ("chandi" is never the NSE stock called
+SILVER), and sends a list rather than guessing when the top two candidates are
+close.
 
-```bash
-pip install -e .
+---
 
-export TOTP_TOKEN='your-api-key'
-export TOTP_SECRET='your-totp-secret'
+## What is not built
 
-python scripts/authcheck.py     # credentials only — run this first
-python scripts/reconcile.py     # the actual comparison
-```
+Said plainly, because a reader who finds these out from the code trusts the
+README less.
 
-`authcheck.py` tests nothing but the token mint, and names the fix for each
-common failure (secret not base32, clock skew, wrong auth flow). Reconciliation
-loads a 136k-row master before it touches the network, so isolating auth keeps
-a credential problem from surfacing late and tangled up in other output.
+- **Intraday alerts do not fire.** Rules, gate and composer are built and
+  tested; nothing polls the signal engine yet. Briefs work.
+- **The wrap's "Held back N things" reads a table nothing writes yet.** Same
+  day as the poll.
+- **`app/agent/` is empty.** No LLM path. `why is silver up` gets the
+  out-of-scope line.
+- **Festival holidays are missing** from `market/holidays.json`. A brief will
+  fire on Diwali until someone pastes the NSE list. The file reloads on save.
+- **Security was deferred** to reach dogfooding. The link page is plain HTTP
+  on a LAN address. Fine for ten internal users on a known network.
+- **Every `Store` method blocks the event loop** — sync psycopg behind
+  `async def`. Fine at ten users; the pool refactor is planned.
 
-Neither needs a database, a `.env`, or Redis — that is why the dependency list
-above is shorter than `pip install -e .`. `reconcile.py` downloads the
-instrument master itself if it is absent.
+---
 
-It prints both basis conventions side by side against your real book. Pin the
-one that matches the app in `pnl.py:DEFAULT_BASIS`.
+## Docs
 
-**This is the Phase 1 gate.** Portfolio value must match the Groww app to the
-rupee before a single alert gets built on top of it.
-
-## The instrument master
-
-`data/instruments.csv` (136,779 rows) is the source of truth for symbols,
-lot sizes, expiries and exchange tokens. Refresh it daily at 07:30 IST:
-
-```bash
-make instruments
-```
-
-The real schema differs from what you might assume: `underlying_symbol`,
-`expiry_date` and `strike_price` naming; a structured `groww_symbol`
-(`NSE-NIFTY-15Sep26-19550-CE`) that is far easier to match against than
-`trading_symbol` (`NIFTY2691519550CE`); futures rows carrying a strike
-sentinel of `-0.01` or `0` rather than null; and NSE running its own
-`COMMODITY` segment alongside MCX.
-
-Resolution rules that real data forced (`app/tools/instruments.py`):
-
-- **Dual-listed equities collapse on ISIN.** RELIANCE on NSE and BSE is one
-  instrument quoted twice, not an ambiguity worth asking about.
-- **Commodity aliases never reach the equity table.** NSE lists an equity
-  called SILVER and one called GOLD1. "chandi" means the metal, always.
-- **GOLD stays ambiguous** across MCX and NSE — those are genuinely different
-  contracts — until the user's own book breaks the tie.
-- **A strike off the ladder offers neighbours** rather than nothing.
-- **Never guess on a close call.** If the top two candidates are within 15
-  points, send a list message.
-
-Lot sizes come from the master and only from the master. NIFTY is 65 today.
-
-## Running it
-
-**Full setup, fresh clone to texting your own number: [docs/QUICKSTART.md](docs/QUICKSTART.md).**
-`python scripts/doctor.py` checks every prerequisite and prints the command
-that fixes each failure.
-
-```bash
-cp .env.example .env && chmod 600 .env
-python -m app.auth.crypto >> .env        # generates CRED_KEY
-
-make up            # postgres, redis, api, worker
-make instruments   # seed the instrument master
-make test          # 442 tests
-make eval          # golden set: intent accuracy, numeric exactness
-```
-
-To drive the real pipeline without WhatsApp:
-
-```bash
-TOTP_TOKEN=... TOTP_SECRET=... python -m app.repl
-```
-
-## Evaluation
-
-Three layers (`eval/run.py`), gated before every deploy:
-
-| Layer | Target |
+| | |
 |---|---|
-| Intent accuracy | >95% |
-| **Numeric exactness** | **100% — any failure is a ship-blocker** |
-| Prose quality (LLM-as-judge) | mean >4.2, pending the LLM path |
-
-Numeric exactness asserts that rendered figures equal figures computed
-independently from frozen fixtures. It is the layer that matters: a finance
-assistant that is occasionally wrong about a number is worse than none.
-
-## Credentials
-
-Collected on a signed, single-use, ten-minute link page — never pasted into
-the WhatsApp chat, because WhatsApp backups are not under your control. They
-are tested against Groww before anything is written, then stored AES-256-GCM
-encrypted with a key that lives outside the repo. Logs redact anything
-token-shaped.
-
-The Baileys WhatsApp session directory is a bearer token for the whole
-assistant. Keep it on a dedicated number, on a box you control, gitignored
-(it is) and encrypted at rest.
-
-## Rate limits
-
-Limits are **per type-group**, shared across every API in the group:
-
-| Group | /sec | /min |
-|---|---|---|
-| Authentication | 5 | 30 (+150 per 24h on the token endpoint) |
-| Orders | 10 | 250 |
-| Live Data | 10 | 300 |
-| Non-Trading | 20 | 500 |
-
-At ~30 users the binding constraint is Live Data. `get_ltp` and `get_ohlc`
-take up to 50 instruments per call — one batched call for the whole
-portfolio, never one per holding. The token bucket in `app/infra.py` is
-shared across processes via Redis; when it runs dry, serve cache with a
-staleness label rather than erroring.
-
-## Open questions
-
-Carried from the spec, plus what the SDK and the instrument master settled:
-
-| # | Question | Status |
-|---|---|---|
-| 1 | MCX portfolio parity | Master confirms MCX instruments under `segment=COMMODITY`; live positions still need checking |
-| 2 | Order list method name | **Settled**: `get_order_list(page, page_size, segment, timeout)` |
-| 3 | Trading API subscription cost per account | Open |
-| 4 | Margin utilisation definition | Open — `make reconcile` |
-| 5 | Access token TTL under TOTP | Open — measure, then halve it for the broker |
-| 6 | Physical delivery flags | Open — needed by the Phase 2 expiry rule |
-| 7 | Baileys stability | Open — run a week on a spare number first |
-
-One more the SDK settled: `GrowwAPI.get_access_token` is annotated `-> dict`
-but returns the bare token string. `app/auth/broker.py` accepts both shapes.
-
-## Definition of done
-
-> You have used it as your primary way of checking your book for five
-> consecutive trading days and have not once opened the app to verify a
-> number it gave you.
-
-Phase 2 does not start until that is true.
+| [`docs/GR2_MEMO.md`](docs/GR2_MEMO.md) | Two pages: the product calls and engineering decisions, for someone with no context |
+| [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Setup, verification, what breaks and why |
+| [`docs/SIGNAL_CONTRACT.md`](docs/SIGNAL_CONTRACT.md) | The negotiated contract with the signal engine (v0.3) |
+| [`docs/research/`](docs/research/) | How the transfer plan, the scorecard study and the contract negotiation went. Reference, not living docs |
