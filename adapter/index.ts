@@ -35,6 +35,13 @@ const STREAM_MAXLEN = 10_000
 // session in favor of incoming prekey bundle" line -- and a message encrypted
 // against the losing session is accepted here and never renders there.
 const REPLY_TO = process.env.REPLY_TO === 'phone' ? 'phone' : 'echo'
+// Baileys' own logger was silent, which meant every failure inside the
+// library -- a session it could not build, a prekey fetch that failed, a send
+// it gave up on -- happened with nothing written anywhere. A send can return a
+// message id and never be transmitted, and we spent a day unable to see why.
+// 'warn' is quiet in normal running; set BAILEYS_LOG_LEVEL=debug to see the
+// protocol itself.
+const BAILEYS_LOG_LEVEL = process.env.BAILEYS_LOG_LEVEL ?? 'warn'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 const redis = createClient({ url: REDIS_URL })
@@ -199,12 +206,12 @@ async function start(): Promise<void> {
 
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
   const { version } = await fetchLatestBaileysVersion()
-  log.info({ version, gen, replyTo: REPLY_TO }, 'starting baileys')
+  log.info({ version, gen, replyTo: REPLY_TO, baileysLog: BAILEYS_LOG_LEVEL }, 'starting baileys')
 
   const current = makeWASocket({
     version,
     auth: state,
-    logger: pino({ level: 'silent' }),
+    logger: pino({ level: BAILEYS_LOG_LEVEL }),
     markOnlineOnConnect: false,
   })
   sock = current
