@@ -34,6 +34,43 @@ const redis = createClient({ url: REDIS_URL })
 let sock: WASocket | null = null
 let connected = false
 
+// Every socket carries the generation it was built in. A socket that is no
+// longer current ignores its own events, because the alternative is what the
+// logs showed: a closed socket's handler schedules a restart, the restart
+// builds a second socket without retiring the first, and each close from
+// either one schedules another. WhatsApp reads overlapping sessions on one
+// set of credentials as a conflict, which is how a reconnect becomes a
+// logout and how sends stop being delivered while still returning ids.
+let generation = 0
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let backoffMs = 2_000
+const BACKOFF_MIN_MS = 2_000
+const BACKOFF_MAX_MS = 60_000
+
+function teardown(previous: WASocket | null): void {
+  if (!previous) return
+  try {
+    previous.ev.removeAllListeners('creds.update')
+    previous.ev.removeAllListeners('connection.update')
+    previous.ev.removeAllListeners('messages.upsert')
+    previous.end(undefined)
+  } catch (err) {
+    log.warn({ err }, 'could not retire the previous socket cleanly')
+  }
+}
+
+/** At most one reconnect in flight, backing off so a bad spell does not storm. */
+function scheduleReconnect(): void {
+  if (reconnectTimer) return
+  const delay = backoffMs
+  backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS)
+  log.warn({ delay }, 'reconnecting')
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    void start()
+  }, delay)
+}
+
 /** WhatsApp caps a text message at 4096 chars. */
 const MAX_CHARS = 4096
 
@@ -131,20 +168,27 @@ interface OutboundPayload {
 }
 
 async function start(): Promise<void> {
+  const gen = ++generation
+  teardown(sock)
+  sock = null
+  connected = false
+
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
   const { version } = await fetchLatestBaileysVersion()
-  log.info({ version }, 'starting baileys')
+  log.info({ version, gen }, 'starting baileys')
 
-  sock = makeWASocket({
+  const current = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
     markOnlineOnConnect: false,
   })
+  sock = current
 
-  sock.ev.on('creds.update', saveCreds)
+  current.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', (update) => {
+  current.ev.on('connection.update', (update) => {
+    if (gen !== generation) return // a retired socket, talking to nobody
     const { connection, lastDisconnect, qr } = update
 
     if (qr) {
@@ -154,7 +198,8 @@ async function start(): Promise<void> {
 
     if (connection === 'open') {
       connected = true
-      log.info('connected')
+      backoffMs = BACKOFF_MIN_MS
+      log.info({ jid: current.user?.id }, 'connected')
     }
 
     if (connection === 'close') {
@@ -169,12 +214,13 @@ async function start(): Promise<void> {
         process.exit(1)
       }
 
-      log.warn({ status }, 'connection closed, reconnecting')
-      setTimeout(() => void start(), 2_000)
+      log.warn({ status }, 'connection closed')
+      scheduleReconnect()
     }
   })
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+  current.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (gen !== generation) return
     if (type !== 'notify') return
 
     for (const msg of messages) {
