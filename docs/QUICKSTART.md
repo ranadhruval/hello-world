@@ -160,7 +160,7 @@ whether `DEFAULT_BASIS` needs changing.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `make doctor` fails on PUBLIC_BASE_URL | placeholder, or unreachable | Use the real LAN IP, `http` not `https` |
-| Phone can't open the link | API on loopback, or AP isolation | `make api HOST=0.0.0.0`; else hotspot |
+| Phone can't open the link | API on loopback, or AP isolation | `make api HOST=0.0.0.0`; else hotspot. Plain `make api` binds 127.0.0.1 and the phone cannot reach it — check terminal 1 says `0.0.0.0:8000` after every restart |
 | Link page loads, then says expired on submit | schema behind the code | `make migrate`, restart api and worker, text `link` again |
 | Bot keeps replying with the link instead of an answer | credentials sit under a different identity | Text `unlink`, then `link`, and complete the page |
 | Worker logs `outbound` but nothing arrives | see the `receipt` lines | No receipt at all means WhatsApp never accepted it. Run the adapter with `BAILEYS_LOG_LEVEL=debug` and look for `received error in ack` |

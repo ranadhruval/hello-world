@@ -69,8 +69,14 @@ def _base_url_status(url: str) -> tuple[str, str]:
         return OK, f"{url} reachable"
     except Exception:
         # Unreachable from here is not proof it is unreachable from the phone
-        # (split-horizon DNS, a LAN address on another interface), so warn.
-        return WARN, f"{url} did not respond to /health — confirm it opens on your phone"
+        # (split-horizon DNS, a LAN address on another interface), so warn --
+        # but name the two causes that actually happen, because the phone
+        # seeing "took too long to respond" says nothing about which it is.
+        return WARN, (
+            f"{url} did not respond to /health — the api is probably on loopback "
+            "(restart it as `make api HOST=0.0.0.0`), or this hostname does not "
+            "resolve on this network"
+        )
 
 
 def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
