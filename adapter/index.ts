@@ -74,6 +74,21 @@ function scheduleReconnect(): void {
 /** WhatsApp caps a text message at 4096 chars. */
 const MAX_CHARS = 4096
 
+// sendMessage resolves once the message is handed to the socket, so the id it
+// returns proves composition and nothing else. These come back later, from
+// WhatsApp: SERVER_ACK means the servers took it, DELIVERY_ACK means it
+// reached the other phone. A send with a message id and no SERVER_ACK never
+// actually left this machine, which is the difference between our bug and
+// theirs -- and it is invisible without this.
+const STATUS_NAMES: Record<number, string> = {
+  0: 'ERROR',
+  1: 'PENDING',
+  2: 'SERVER_ACK',
+  3: 'DELIVERY_ACK',
+  4: 'READ',
+  5: 'PLAYED',
+}
+
 function jidToWaId(jid: string): string {
   return jid.split('@')[0].split(':')[0]
 }
@@ -216,6 +231,19 @@ async function start(): Promise<void> {
 
       log.warn({ status }, 'connection closed')
       scheduleReconnect()
+    }
+  })
+
+  current.ev.on('messages.update', (updates) => {
+    if (gen !== generation) return
+    for (const u of updates) {
+      if (!u.key?.fromMe) continue
+      const status = u.update?.status
+      if (status === undefined || status === null) continue
+      const name = STATUS_NAMES[status] ?? String(status)
+      const line = { id: u.key.id, jid: u.key.remoteJid, status: name }
+      if (status === 0) log.error(line, 'receipt')
+      else log.info(line, 'receipt')
     }
   })
 
