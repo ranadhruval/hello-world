@@ -13,7 +13,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   type WASocket,
   type proto,
-} from '@whiskeysockets/baileys'
+} from 'baileys'
 import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import { createClient } from 'redis'
@@ -116,17 +116,18 @@ function jidToWaId(jid: string): string {
  * worst failure this process has, because a bot that answers into the void is
  * indistinguishable from a bot with nothing to say.
  *
- * Baileys hands us the phone JID on key.senderPn for exactly this. Every
- * inbound message teaches us the mapping, every outbound send spends it, and
- * Redis holds it so a restart and a proactive send with no inbound behind it
- * still have an address that works.
+ * Baileys 7 tracks this itself and stamps outgoing messages with the right
+ * addressing mode, so replies echo the address the message arrived on and the
+ * mapping is only a fallback for a proactive send with no inbound to echo.
+ * key.remoteJidAlt carries the other identity of the same person: the phone
+ * JID when the chat is LID-addressed.
  */
 const LID_MAP = 'lid_pn'
 
-async function rememberLid(jid: string, senderPn?: string | null): Promise<void> {
-  if (!senderPn || !jid.endsWith('@lid')) return
+async function rememberLid(jid: string, alt?: string | null): Promise<void> {
+  if (!alt || !jid.endsWith('@lid') || alt.endsWith('@lid')) return
   try {
-    await redis.hSet(LID_MAP, jidToWaId(jid), senderPn)
+    await redis.hSet(LID_MAP, jidToWaId(jid), alt)
   } catch (err) {
     log.warn({ err }, 'could not record the lid mapping')
   }
@@ -287,7 +288,7 @@ async function start(): Promise<void> {
         quoted_id: msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? '',
       }
 
-      await rememberLid(jid, msg.key.senderPn)
+      await rememberLid(jid, msg.key.remoteJidAlt)
 
       try {
         await redis.xAdd(STREAM, '*', entry, {
