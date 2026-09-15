@@ -43,6 +43,19 @@ PUBLIC_BASE_URL=http://192.168.1.42:8000
 
 Must be `http`, not `https`, and the real IP — `doctor` rejects the placeholder.
 
+WhatsApp does not turn a bare IP into a tappable link, so with the URL above
+the phone shows plain text and you copy-paste it. To get a real link, put the
+IP behind a wildcard DNS name — any name under `nip.io` resolves to the IP
+embedded in it, nothing to sign up for:
+
+```
+PUBLIC_BASE_URL=http://192.168.1.42.nip.io:8000
+```
+
+Same server, same LAN, but now it is a domain and WhatsApp links it. Needs the
+phone to have DNS, which Wi-Fi with internet does. If corporate DNS blocks
+`nip.io`, fall back to the bare IP and copy-paste.
+
 ## 4 · Infrastructure and schema
 
 ```bash
