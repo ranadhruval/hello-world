@@ -159,10 +159,15 @@ async def run(dsn: str) -> int:
 
     print("\nlink tokens")
     tok = st.new_link_token("lid:4242", b"enc")
-    ok("a live token carries its identity", st.link_request_wa_id(tok) == b"enc")
+    ok("a live token carries its identity", st.link_request(tok)["wa_id_enc"] == b"enc")
     ok("it burns once", st.consume_link_token(tok))
     ok("and not twice", not st.consume_link_token(tok))
-    ok("a burnt token is gone", st.link_request_wa_id(tok) is None)
+    ok("a burnt token is gone", st.link_request(tok) is None)
+    stale = st.new_link_token("lid:4242")
+    ok(
+        "a token from an older build is live but identity-less",
+        st.link_request(stale) is not None and st.link_request(stale)["wa_id_enc"] is None,
+    )
 
     print("\nnotepad")
     await st.notepad_set(job, "since", "cursor-1")

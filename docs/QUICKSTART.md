@@ -162,6 +162,8 @@ whether `DEFAULT_BASIS` needs changing.
 | `make doctor` fails on PUBLIC_BASE_URL | placeholder, or unreachable | Use the real LAN IP, `http` not `https` |
 | Phone can't open the link | API on loopback, or AP isolation | `make api HOST=0.0.0.0`; else hotspot |
 | Link page loads, then says expired on submit | schema behind the code | `make migrate`, restart api and worker, text `link` again |
+| Bot keeps replying with the link instead of an answer | credentials sit under a different identity | Text `unlink`, then `link`, and complete the page |
+| Anything else silent | some hop is down | `make triage` names the hop and the fix |
 | Texting does nothing | adapter not paired | Check terminal 3 for a QR; `redis-cli XLEN inbound` should climb |
 | Messages sent, none arrive | wrong address | Adapter log shows the JID; inbound and outbound should match |
 | Worker traceback every 5s | stale build | `git pull` — `socket_timeout` fix is committed |

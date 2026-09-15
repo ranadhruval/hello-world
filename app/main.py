@@ -55,8 +55,11 @@ async def health() -> JSONResponse:
 
 @app.get("/link", response_class=HTMLResponse)
 async def link_page(t: str = "") -> HTMLResponse:
-    if not t or store().link_request_wa_id(t) is None:
+    req = store().link_request(t) if t else None
+    if req is None:
         return HTMLResponse(_PAGE_EXPIRED, status_code=410)
+    if req["wa_id_enc"] is None:
+        return HTMLResponse(_PAGE_STALE, status_code=409)
     return HTMLResponse(_PAGE_FORM.replace("{{TOKEN}}", t))
 
 
@@ -67,9 +70,12 @@ async def link_submit(
     totp_secret: str = Form(...),
 ) -> HTMLResponse:
     st = store()
-    enc = st.link_request_wa_id(token)
-    if enc is None:
+    req = st.link_request(token)
+    if req is None:
         return HTMLResponse(_PAGE_EXPIRED, status_code=410)
+    if req["wa_id_enc"] is None:
+        return HTMLResponse(_PAGE_STALE, status_code=409)
+    enc = req["wa_id_enc"]
     # The identity the worker minted this link for — a LID as often as a phone
     # number now, which is why the page never asks the user for it.
     wa_id = crypto().decrypt(enc, aad=LINK_AAD)
@@ -197,6 +203,15 @@ _PAGE_EXPIRED = f"""<!doctype html><meta charset=utf-8>
 <h1>This link has expired</h1>
 <p>Links are single-use and last ten minutes. Send <code>link</code> on
 WhatsApp for a fresh one.</p>
+"""
+
+_PAGE_STALE = f"""<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Stale link</title>{_STYLE}
+<h1>This link is from an older build</h1>
+<p>It carries no identity, so there is nothing to connect it to. The server
+has been updated since it was sent. Send <code>link</code> on WhatsApp for a
+fresh one.</p>
 """
 
 _PAGE_ERROR = f"""<!doctype html><meta charset=utf-8>

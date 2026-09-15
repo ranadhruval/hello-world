@@ -604,14 +604,19 @@ class Store:
         )
         return token
 
-    def link_request_wa_id(self, token: str) -> bytes | None:
-        """The encrypted identity behind a live token; None if expired or used."""
-        row = self._one(
-            "SELECT wa_id_enc FROM link_requests "
+    def link_request(self, token: str) -> dict | None:
+        """The live link request behind a token; None if unknown, used or expired.
+
+        Returns the row rather than the identity alone so the caller can tell
+        "no such token" from "token exists but carries no identity" -- the
+        second means an older build minted it, and reporting both as expired
+        is how a working link flow looks broken.
+        """
+        return self._one(
+            "SELECT token, wa_id_enc FROM link_requests "
             "WHERE token = %s AND used = false AND expires_at > now()",
             (token,),
         )
-        return row["wa_id_enc"] if row else None
 
     def consume_link_token(self, token: str) -> bool:
         """Burn a token. Returns False if it was expired or already used."""

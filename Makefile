@@ -1,4 +1,4 @@
-.PHONY: smoke-db up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api replay shadow
+.PHONY: triage smoke-db up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api replay shadow
 
 # Prefer the project venv, so these targets work from a terminal where it was
 # never activated. macOS has no bare `python`, only `python3`, so calling
@@ -48,6 +48,11 @@ instruments-download:
 # Check every prerequisite and name the fix for each failure.
 doctor:
 	$(PYTHON) scripts/doctor.py
+
+# Doctor checks prerequisites before you start. Triage checks the RUNNING
+# system and names the hop a text died at.
+triage:
+	$(PYTHON) scripts/triage.py
 
 # Verify Groww credentials on their own, before anything else.
 authcheck:
