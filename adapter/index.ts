@@ -41,6 +41,52 @@ function jidToWaId(jid: string): string {
   return jid.split('@')[0].split(':')[0]
 }
 
+/**
+ * WhatsApp is moving chats onto LID addressing, where the chat JID is
+ * <opaque>@lid and its digits are not a phone number. Encrypting to a bare
+ * @lid address does not reliably establish a session: sendMessage returns a
+ * message id, the send is accepted, and nothing is ever delivered. That is the
+ * worst failure this process has, because a bot that answers into the void is
+ * indistinguishable from a bot with nothing to say.
+ *
+ * Baileys hands us the phone JID on key.senderPn for exactly this. Every
+ * inbound message teaches us the mapping, every outbound send spends it, and
+ * Redis holds it so a restart and a proactive send with no inbound behind it
+ * still have an address that works.
+ */
+const LID_MAP = 'lid_pn'
+
+async function rememberLid(jid: string, senderPn?: string | null): Promise<void> {
+  if (!senderPn || !jid.endsWith('@lid')) return
+  try {
+    await redis.hSet(LID_MAP, jidToWaId(jid), senderPn)
+  } catch (err) {
+    log.warn({ err }, 'could not record the lid mapping')
+  }
+}
+
+/** The address to actually send to: a phone JID whenever one is known. */
+async function deliverableJid(jid: string): Promise<string> {
+  if (!jid.endsWith('@lid')) return jid
+  try {
+    const pn = await redis.hGet(LID_MAP, jidToWaId(jid))
+    if (pn) return pn
+  } catch (err) {
+    log.warn({ err }, 'lid lookup failed')
+  }
+  log.warn({ jid }, 'no phone address known for this lid — sending to the lid may not deliver')
+  return jid
+}
+
+/**
+ * The inverse of the worker's canonical_wa_id, for a send with no inbound
+ * message to echo. A LID identity rebuilt as <digits>@s.whatsapp.net is a
+ * different account, or nobody at all.
+ */
+function waIdToJid(waId: string): string {
+  return waId.startsWith('lid:') ? `${waId.slice(4)}@lid` : `${waId}@s.whatsapp.net`
+}
+
 function textOf(msg: proto.IWebMessageInfo): string | null {
   const m = msg.message
   if (!m) return null
@@ -151,6 +197,8 @@ async function start(): Promise<void> {
         quoted_id: msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? '',
       }
 
+      await rememberLid(jid, msg.key.senderPn)
+
       try {
         await redis.xAdd(STREAM, '*', entry, {
           TRIM: { strategy: 'MAXLEN', strategyModifier: '~', threshold: STREAM_MAXLEN },
@@ -206,7 +254,7 @@ const server = createServer(async (req, res) => {
         jid?: string
         on: boolean
       }
-      const target = body.jid || `${body.wa_id}@s.whatsapp.net`
+      const target = await deliverableJid(body.jid || waIdToJid(body.wa_id))
       await sock?.sendPresenceUpdate(body.on ? 'composing' : 'paused', target)
       return send(res, 200, { ok: true })
     }
@@ -218,7 +266,7 @@ const server = createServer(async (req, res) => {
       // Echo the address the message came from. Only fall back to building
       // one when there is nothing to echo — the console REPL, or a future
       // proactive send with no inbound message behind it.
-      const jid = payload.jid || `${payload.wa_id}@s.whatsapp.net`
+      const jid = await deliverableJid(payload.jid || waIdToJid(payload.wa_id))
 
       const content =
         payload.kind === 'image' && payload.image_b64

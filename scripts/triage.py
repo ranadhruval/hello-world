@@ -69,6 +69,14 @@ def main() -> int:
         depth = r.xlen("inbound")
         ok("reachable", cfg.redis_url)
         ok("inbound stream", f"{depth} message(s) ever queued")
+        # A LID chat can only be delivered to via the phone address behind it,
+        # which the adapter learns from inbound messages. Without it a send is
+        # accepted and silently never arrives.
+        lids = r.hgetall("lid_pn")
+        if lids:
+            ok("lid -> phone map", f"{len(lids)} address(es) known")
+        else:
+            warn("lid -> phone map", "empty — replies to a @lid chat may not arrive")
     except Exception as exc:  # noqa: BLE001
         bad("reachable", f"{type(exc).__name__}: {exc}")
         problems.append("Redis is down: docker compose up -d redis")
