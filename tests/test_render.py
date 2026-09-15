@@ -3,7 +3,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from app.config import IST
+from app.render import templates
 from app.render.templates import arrow, as_of, inr, pct, qty, signed
+from app.tools.pnl import PortfolioPnl
 
 
 @pytest.mark.parametrize(
@@ -61,3 +63,36 @@ def test_as_of_marks_stale_data():
 
 def test_as_of_includes_scope():
     assert "11 holdings" in as_of(datetime.now(IST), scope="11 holdings")
+
+
+# ---- holdings we could not value ------------------------------------
+
+
+def _book(missing: list[str]) -> PortfolioPnl:
+    return PortfolioPnl(
+        current_value=100000.0,
+        cost=90000.0,
+        unrealised=10000.0,
+        unrealised_pct=11.1,
+        day_change=-500.0,
+        day_change_pct=-0.5,
+        holdings=[],
+        missing_quotes=missing,
+    )
+
+
+def test_named_unpriced_holdings_are_named():
+    out = templates.portfolio_summary(_book(["AEROFLEX", "MARINE"]))
+    assert "no quote for AEROFLEX, MARINE" in out
+
+
+def test_an_unnamed_holding_is_counted_not_left_blank():
+    """Groww returns the odd holding with no symbol; the line must still read."""
+    out = templates.portfolio_summary(_book([""]))
+    assert "no quote for 1 unnamed holding" in out
+    assert not out.rstrip().endswith("no quote for")
+
+
+def test_named_and_unnamed_together():
+    out = templates.portfolio_summary(_book(["AEROFLEX", "", ""]))
+    assert "no quote for AEROFLEX and 2 unnamed holdings" in out

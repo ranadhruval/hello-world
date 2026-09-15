@@ -88,8 +88,24 @@ def portfolio_summary(p: PortfolioPnl, limit: int = 3) -> str:
     lines.append("")
     lines.append(as_of(p.as_of, scope=_plural(len(p.holdings), "holding")))
     if p.missing_quotes:
-        lines.append(f"   {WARN} no quote for {', '.join(p.missing_quotes[:3])}")
+        lines.append(f"   {WARN} no quote for {_unpriced(p.missing_quotes)}")
     return "\n".join(lines)
+
+
+def _unpriced(symbols: list[str]) -> str:
+    """Name the holdings we can name, count the ones we cannot.
+
+    Groww returns the occasional holding with no trading symbol. It still has
+    to be reported -- a holding we could not value is exactly what I5 says to
+    say out loud -- but joining a blank name produced a warning that trailed
+    off into nothing and read like a bug in the message itself.
+    """
+    named = [s for s in symbols if s.strip()]
+    unnamed = len(symbols) - len(named)
+    parts = [", ".join(named[:3])] if named else []
+    if unnamed:
+        parts.append(f"{unnamed} unnamed holding{'' if unnamed == 1 else 's'}")
+    return " and ".join(parts)
 
 
 def portfolio_day_change(p: PortfolioPnl) -> str:
@@ -131,9 +147,7 @@ def positions_open(rows: list[PositionPnl], ts: datetime | None = None) -> str:
     lines = [f"{arrow(total)} Positions {signed(total)}", ""]
     for r in rows[:4]:
         side = "L" if r.net_qty > 0 else "S"
-        lines.append(
-            f"   {r.symbol:<20} {side}{qty(abs(r.net_qty))}  {signed(r.unrealised)}"
-        )
+        lines.append(f"   {r.symbol:<20} {side}{qty(abs(r.net_qty))}  {signed(r.unrealised)}")
     lines.append("")
     lines.append(as_of(ts, scope=_plural(len(rows), "position")))
     return "\n".join(lines)
@@ -237,7 +251,9 @@ def orders_open(orders: list[Order], ts: datetime | None = None) -> str:
     lines = [f"{_plural(len(orders), 'open order').capitalize()}", ""]
     for o in orders[:4]:
         price = inr(o.price, 2) if o.price else "MKT"
-        lines.append(f"   {o.transaction_type[:1]} {o.trading_symbol:<18} {qty(o.quantity)} @ {price}")
+        lines.append(
+            f"   {o.transaction_type[:1]} {o.trading_symbol:<18} {qty(o.quantity)} @ {price}"
+        )
     lines.append("")
     lines.append(as_of(ts))
     return "\n".join(lines)

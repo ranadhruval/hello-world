@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 
 from app.market import calendar
@@ -24,7 +25,7 @@ from app.tools.pnl import (
     portfolio_pnl,
     position_pnl,
 )
-from app.tools.types import Instrument
+from app.tools.types import Instrument, Position
 
 log = logging.getLogger(__name__)
 
@@ -81,16 +82,51 @@ async def read_portfolio(
 
 
 async def read_positions(tools: GrowwTools) -> list[PositionPnl]:
-    """Open positions with P&L, largest absolute P&L first. Unpriced legs are dropped."""
+    """Open positions with P&L, largest absolute P&L first.
+
+    get_ltp takes one segment per call, and one book can hold NSE index options
+    and MCX commodity options at the same time. Asking for a crude oil contract
+    under the equity-derivatives segment is refused outright, and pricing every
+    position off the first one's segment cost the whole answer rather than one
+    line. One call per segment, and a segment that fails costs only its own
+    positions.
+    """
     positions = await tools.get_positions()
     live = [p for p in positions if (p.credit_quantity - p.debit_quantity) != 0]
     if not live:
         return []
-    keys = [f"{p.exchange or 'NSE'}_{p.trading_symbol}" for p in live]
-    ltps = await tools.get_ltp(keys, live[0].segment or SEGMENT_FNO)
-    rows = [position_pnl(p, ltps[k]) for p, k in zip(live, keys, strict=True) if k in ltps]
+
+    by_segment: dict[str, list[Position]] = defaultdict(list)
+    for p in live:
+        by_segment[(p.segment or SEGMENT_FNO).upper()].append(p)
+
+    ltps: dict[str, float] = {}
+    for segment, group in by_segment.items():
+        try:
+            ltps.update(await tools.get_ltp([position_key(p) for p in group], segment))
+        except ToolError as exc:
+            log.warning("no prices for segment %s (%d positions): %s", segment, len(group), exc)
+
+    rows = []
+    for p in live:
+        ltp = ltps.get(position_key(p))
+        if ltp is None:
+            log.warning("no price for open position %s", p.trading_symbol)
+            continue
+        rows.append(position_pnl(p, ltp))
     rows.sort(key=lambda r: -abs(r.total))
     return rows
+
+
+def position_key(p: Position) -> str:
+    """The LTP key for a position: 'EXCHANGE_SYMBOL'.
+
+    Positions usually carry their exchange. When one does not, the segment
+    decides the default, because a commodity contract defaulted to NSE
+    resolves to nothing.
+    """
+    default = "MCX" if (p.segment or "").upper() == SEGMENT_COMMODITY else "NSE"
+    return f"{p.exchange or default}_{p.trading_symbol}"
 
 
 async def _day_changes(
@@ -119,6 +155,15 @@ def spot(index: InstrumentIndex, symbol: str) -> Instrument | None:
 
 
 def equity_key(index: InstrumentIndex, symbol: str) -> str | None:
+    """The LTP key for a holding, or None when the master cannot place it.
+
+    A holding with no trading symbol at all comes back from Groww now and then.
+    It still counts towards cost, and portfolio_pnl reports it under
+    missing_quotes, so there is nothing to warn about -- an unnamed holding is
+    not a resolution failure.
+    """
+    if not symbol.strip():
+        return None
     inst = spot(index, symbol)
     if inst is None:
         log.warning("no instrument master entry for holding %s", symbol)
