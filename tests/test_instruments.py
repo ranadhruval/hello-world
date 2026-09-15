@@ -5,6 +5,7 @@ that real data has sharp edges, and against a tiny hand-built index where the
 point is a specific rule.
 """
 
+import time
 from datetime import date
 
 import pytest
@@ -25,18 +26,30 @@ def test_future_strike_sentinel_becomes_none():
     """FUT rows carry -0.01 or 0, not null."""
     for sentinel in ("-0.01", "0"):
         row = {
-            "exchange": "NSE", "segment": "FNO", "trading_symbol": "NIFTY26SEPFUT",
-            "exchange_token": "68407", "instrument_type": "FUT", "strike_price": sentinel,
-            "expiry_date": "2026-09-29", "lot_size": "65", "tick_size": "0.05",
+            "exchange": "NSE",
+            "segment": "FNO",
+            "trading_symbol": "NIFTY26SEPFUT",
+            "exchange_token": "68407",
+            "instrument_type": "FUT",
+            "strike_price": sentinel,
+            "expiry_date": "2026-09-29",
+            "lot_size": "65",
+            "tick_size": "0.05",
         }
         assert parse_row(row).strike is None
 
 
 def test_blank_expiry_becomes_none():
     row = {
-        "exchange": "NSE", "segment": "CASH", "trading_symbol": "RELIANCE",
-        "exchange_token": "2885", "instrument_type": "EQ", "expiry_date": "",
-        "strike_price": "", "lot_size": "1", "tick_size": "0.05",
+        "exchange": "NSE",
+        "segment": "CASH",
+        "trading_symbol": "RELIANCE",
+        "exchange_token": "2885",
+        "instrument_type": "EQ",
+        "expiry_date": "",
+        "strike_price": "",
+        "lot_size": "1",
+        "tick_size": "0.05",
     }
     parsed = parse_row(row)
     assert parsed.expiry is None and parsed.strike is None
@@ -44,8 +57,11 @@ def test_blank_expiry_becomes_none():
 
 def test_test_instruments_are_dropped():
     row = {
-        "exchange": "NSE", "segment": "FNO", "trading_symbol": "031NSETEST36DECFUT",
-        "exchange_token": "36691", "instrument_type": "FUT",
+        "exchange": "NSE",
+        "segment": "FNO",
+        "trading_symbol": "031NSETEST36DECFUT",
+        "exchange_token": "36691",
+        "instrument_type": "FUT",
     }
     assert parse_row(row) is None
 
@@ -209,8 +225,6 @@ def test_user_book_boost_is_symmetric(real_index):
 
 def test_resolution_is_fast_enough_for_the_fast_path(real_index):
     """The fast path budgets p50 < 900ms for the whole turn."""
-    import time
-
     start = time.perf_counter()
     for q in ["reliance", "nifty 25000 ce", "gold", "xyzabc", "tata motors"]:
         real_index.resolve(q, today=MASTER_DATE)

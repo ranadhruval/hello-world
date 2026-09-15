@@ -1,4 +1,4 @@
-# Quickstart — work laptop, LAN route
+# Quickstart — fresh clone to a message on your phone
 
 Ten minutes from a fresh pull to a message on your phone. Assumes Docker
 Desktop, Python 3.11+, Node 18+ and the spare SIM already paired once.
@@ -116,6 +116,32 @@ restart needed.
 once against your live book — it auto-detects the right convention. Until then
 every F&O number is unconfirmed.
 
+## Verifying credentials and numbers
+
+```bash
+export TOTP_TOKEN='your-api-key'
+export TOTP_SECRET='your-totp-secret'
+
+python scripts/authcheck.py
+```
+
+Single quotes matter — TOTP secrets can contain characters the shell expands.
+
+This tests only the token mint and names the fix for each common failure
+(secret not base32, clock skew, wrong auth flow). Once it prints a profile,
+credentials are good.
+
+Then confirm the numbers before you trust any of them:
+
+```bash
+python scripts/reconcile.py
+```
+
+Compare portfolio value and margin against the Groww app **in the same
+minute**. The script also decides the basis convention for you and tells you
+whether `DEFAULT_BASIS` needs changing.
+
+
 ## If something breaks
 
 | Symptom | Cause | Fix |
@@ -126,3 +152,27 @@ every F&O number is unconfirmed.
 | Messages sent, none arrive | wrong address | Adapter log shows the JID; inbound and outbound should match |
 | Worker traceback every 5s | stale build | `git pull` — `socket_timeout` fix is committed |
 | Bot goes quiet overnight | laptop slept | Expected on a laptop. Caffeinate, or accept it |
+
+## Known limits on a Mac
+
+- **Sleep stops everything.** Fine while dogfooding. It becomes a real problem
+  for Phase 2, which is why the spec calls for a Mumbai VPS with a static IP —
+  the static IP is also mandatory for Phase 3 order placement.
+- **A tunnel URL changes on restart**, so `PUBLIC_BASE_URL` needs re-setting.
+  Only matters when linking a new account.
+- **Baileys interactive messages** (buttons, lists) often do not render on
+  personal accounts, so the adapter sends numbered plain text instead.
+
+
+## Security notes
+
+- Groww credentials never pass through WhatsApp. They are collected on the
+  link page, tested, then stored AES-256-GCM encrypted. A Baileys compromise
+  leaks messages, not credentials.
+- The adapter binds to `127.0.0.1`. `POST /send` can make your WhatsApp
+  message any number, so it must not be exposed to the network.
+- `adapter/session/` is a bearer token for the entire WhatsApp account, not
+  just this bot. Gitignored; keep it off synced folders.
+- Logs record `wa_id` and message ids, never message text. Token-shaped
+  strings are redacted.
+- `unlink` really deletes — credentials, messages, traces, watches, the lot.

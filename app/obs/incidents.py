@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from app.config import IST
+from app.config import IST, to_ist
 
 # Parts of an error that differ between occurrences of the same fault. Stripped
 # before hashing, or every retry looks like a brand-new incident and the dedup
@@ -80,15 +80,6 @@ class Incident:
     alerted_at: datetime | None = None
 
 
-def _aware(ts: datetime | None) -> datetime | None:
-    """Postgres hands back timestamptz; anything naive predates that or came
-    from a test. Coerce rather than raise — a monitoring path must not be the
-    thing that takes the process down."""
-    if ts is None or ts.tzinfo is not None:
-        return ts
-    return ts.replace(tzinfo=IST)
-
-
 def should_page(incident: Incident | None, now: datetime) -> bool:
     """Whether this occurrence is worth telling a human about.
 
@@ -102,10 +93,10 @@ def should_page(incident: Incident | None, now: datetime) -> bool:
         return True
     if incident.state is IncidentState.CLOSED:
         return True
-    alerted_at = _aware(incident.alerted_at)
+    alerted_at = to_ist(incident.alerted_at)
     if alerted_at is None:
         return True
-    return _aware(now) - alerted_at >= REPAGE_AFTER
+    return to_ist(now) - alerted_at >= REPAGE_AFTER
 
 
 class Incidents:
@@ -118,7 +109,7 @@ class Incidents:
         self, job_name: str, error: str, *, now: datetime | None = None
     ) -> tuple[Incident, bool]:
         """Log an occurrence. Returns the incident and whether to page."""
-        now = _aware(now) or datetime.now(IST)
+        now = to_ist(now) or datetime.now(IST)
         iid = incident_id(job_name, error)
         existing = await self._store.get_incident(iid)
         page = should_page(existing, now)

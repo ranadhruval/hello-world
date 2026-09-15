@@ -2,7 +2,7 @@
 
 Every invariant here guards a named failure. None is theoretical.
 
-**Short sleeps, never long ones.** `app/worker.py:_refresh_instruments_daily`
+**Short sleeps, never long ones.** The instrument refresh this replaced
 computes its target once and then awaits a single sleep of up to 24 hours. A
 laptop suspend or an NTP step silently breaks that, and the runbook already
 lists "bot stops overnight / your Mac slept" as a known limitation. Ticking

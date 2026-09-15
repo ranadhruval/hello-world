@@ -8,17 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
-from app.config import IST
+from app.config import to_ist
 from app.router.prefs import PrefAction, PrefCommand
-
-
-def _ist(ts: datetime | None) -> datetime | None:
-    """Postgres hands timestamps back in the server's zone. Rendering one raw
-    showed 'quiet until 05:12' next to a confirmation saying 10:42 — the same
-    instant, two different times, which reads as the desk being confused."""
-    if ts is None:
-        return None
-    return ts.astimezone(IST) if ts.tzinfo else ts.replace(tzinfo=IST)
 
 
 def _hhmm(t: time | None, fallback: str) -> str:
@@ -36,7 +27,7 @@ def confirm(cmd: PrefCommand, prefs: dict, *, until: datetime | None = None) -> 
         )
 
     if cmd.action is PrefAction.SNOOZE:
-        local = _ist(until)
+        local = to_ist(until)
         if local is None:
             return "Quiet for now."
         return f"Quiet until {local:%H:%M}. Anything urgent still gets through."
@@ -51,7 +42,7 @@ def confirm(cmd: PrefCommand, prefs: dict, *, until: datetime | None = None) -> 
 def settings(prefs: dict) -> str:
     """What the desk currently believes about how you want to be contacted."""
     paused = prefs.get("briefs_paused")
-    until = _ist(prefs.get("muted_until"))
+    until = to_ist(prefs.get("muted_until"))
     lines = [
         f"Morning brief   {_hhmm(prefs.get('brief_pre_market'), '08:45')}",
         f"Wrap            {_hhmm(prefs.get('brief_post_close'), '15:45')}",

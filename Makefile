@@ -1,4 +1,4 @@
-.PHONY: smoke-db up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api deps-reconcile replay shadow
+.PHONY: smoke-db up down logs migrate instruments instruments-download doctor authcheck eval test lint reconcile adapter worker api replay shadow
 
 # Prefer the project venv, so these targets work from a terminal where it was
 # never activated. macOS has no bare `python`, only `python3`, so calling
@@ -8,10 +8,6 @@ PYTHON := $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; \
                   elif command -v python3 >/dev/null 2>&1; then echo python3; \
                   else echo python; fi)
 
-# Minimal dependency set for authcheck + reconcile: no psycopg, no fastapi.
-# Enough to verify credentials and numbers before any infrastructure exists.
-deps-reconcile:
-	$(PYTHON) -m pip install growwapi pyotp pydantic pydantic-settings httpx
 
 up:
 	docker compose up -d --build

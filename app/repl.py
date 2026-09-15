@@ -17,7 +17,7 @@ from pathlib import Path
 import pyotp
 from growwapi import GrowwAPI
 
-from app.auth.broker import _access_token
+from app.auth.broker import access_token
 from app.channel.console import ConsoleChannel, inbound
 from app.dispatch import Desk
 from app.tools.groww import GrowwTools
@@ -35,7 +35,7 @@ class _DirectBroker:
         if not token or not secret:
             sys.exit("Set TOTP_TOKEN and TOTP_SECRET (groww.in/trade-api/api-keys)")
         access = GrowwAPI.get_access_token(api_key=token, totp=pyotp.TOTP(secret).now())
-        self._client = GrowwAPI(_access_token(access))
+        self._client = GrowwAPI(access_token(access))
 
     async def client(self, user_id: int) -> GrowwAPI:
         return self._client

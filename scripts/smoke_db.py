@@ -139,6 +139,9 @@ async def run(dsn: str) -> int:
     )
     ok("a duplicate enqueue is refused", dup is None)
     ok("and does not cancel the original", live in [c.id for c in await st.claim_outbox(limit=50)])
+    # Leave nothing pending: a row left behind here is claimed by the NEXT run
+    # of this script and fails its supersession check for no real reason.
+    await st.finish_outbox(live, OutboxState.SENT, channel_msg_id="wamid.smoke")
     await st.finish_outbox(newer, OutboxState.SENT, channel_msg_id="wamid.1")
     ok("a sent interrupt spends the day's budget", await st.interrupts_today(u1) >= 1)
 

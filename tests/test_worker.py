@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest import mock
 
 import pytest
@@ -134,15 +135,11 @@ async def test_console_channel_returns_a_message_id():
 
 
 def test_outbound_rejects_too_many_buttons():
-    import pytest
-
     with pytest.raises(ValueError):
         OutboundMessage(wa_id="1", kind="buttons", text="x", buttons=["a", "b", "c", "d"])
 
 
 def test_outbound_rejects_oversize_text():
-    import pytest
-
     with pytest.raises(ValueError):
         OutboundMessage(wa_id="1", kind="text", text="x" * 5000)
 
@@ -228,13 +225,15 @@ async def test_worker_without_a_store_still_answers():
 
 def test_to_inbound_decodes_byte_fields():
     """redis-py returns bytes; the adapter writes strings."""
-    msg = _to_inbound({
-        b"channel_msg_id": b"ABC123",
-        b"wa_id": b"919999999999",
-        b"text": b"portfolio",
-        b"ts": b"1757700000000",
-        b"quoted_id": b"",
-    })
+    msg = _to_inbound(
+        {
+            b"channel_msg_id": b"ABC123",
+            b"wa_id": b"919999999999",
+            b"text": b"portfolio",
+            b"ts": b"1757700000000",
+            b"quoted_id": b"",
+        }
+    )
     assert msg.channel_msg_id == "ABC123"
     assert msg.wa_id == "919999999999"
     assert msg.text == "portfolio"
@@ -329,8 +328,6 @@ async def test_desk_replies_also_echo_the_jid():
 async def test_account_intents_are_logged(caplog):
     """The intent log used to sit after an early return, so a working link
     flow produced no log line and looked like a dropped message."""
-    import logging
-
     store = FakeStore()
     worker, _ = make_worker(store=store)
     with caplog.at_level(logging.INFO, logger="app.worker"):

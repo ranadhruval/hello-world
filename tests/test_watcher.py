@@ -10,16 +10,18 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 
+import app.market.calendar as cal
 from app.compose.alerts import compose
 from app.compose.guard import check, guard
 from app.config import IST
 from app.market.calendar import SessionState, minutes_to_close, next_open, session_state
 from app.tools.pnl import HoldingPnl, MarginUtilisation, PortfolioPnl, PositionPnl
 from app.tools.types import Greeks
+from app.watcher import rules as R
 from app.watcher.exposure import build_book
 from app.watcher.gate import GateState, Route, score
 from app.watcher.rules import Context, Family, Trigger, evaluate, margin_band
-from app.watcher.shadow import ShadowLog, render_report
+from app.watcher.shadow import ShadowEntry, ShadowLog, render_report
 from app.watcher.signals import MissingField, from_wire
 
 IST_NOON = datetime(2026, 9, 15, 12, 0, tzinfo=IST)  # a Tuesday
@@ -298,8 +300,6 @@ def test_day_move_says_nothing_without_history():
 
 
 def test_a_raising_rule_does_not_cost_the_others_their_turn():
-    from app.watcher import rules as R
-
     def explode(_):
         raise RuntimeError("boom")
 
@@ -611,8 +611,6 @@ def test_minutes_to_close_is_none_when_shut():
 
 def test_holidays_reload_when_the_file_changes(tmp_path, monkeypatch):
     """A watcher running for months must see an edited holiday file."""
-    import app.market.calendar as cal
-
     f = tmp_path / "holidays.json"
     f.write_text('{"2026": []}')
     monkeypatch.setattr(cal, "HOLIDAYS_PATH", f)
@@ -624,8 +622,6 @@ def test_holidays_reload_when_the_file_changes(tmp_path, monkeypatch):
 
 def test_refuses_to_run_against_an_uncovered_year(tmp_path, monkeypatch):
     """A missing file reads as 'every weekday is a trading day' — silently."""
-    import app.market.calendar as cal
-
     f = tmp_path / "holidays.json"
     f.write_text('{"2026": []}')
     monkeypatch.setattr(cal, "HOLIDAYS_PATH", f)
@@ -665,8 +661,6 @@ def test_shadow_log_round_trips(tmp_path):
 
 
 def test_report_names_the_calibration_verdict():
-    from app.watcher.shadow import ShadowEntry
-
     quiet = render_report(date(2026, 9, 15), [])
     assert "too quiet" in quiet
 
@@ -678,8 +672,6 @@ def test_report_names_the_calibration_verdict():
 
 
 def test_report_shows_suppressed_rows_so_silence_is_visible():
-    from app.watcher.shadow import ShadowEntry
-
     out = render_report(
         date(2026, 9, 15),
         [ShadowEntry(IST_NOON, "market.volume_spike", "TINY", Route.SILENT, 0.09, "below_bar", "")],
@@ -712,7 +704,7 @@ def test_a_worsening_band_is_never_blocked_by_that_cooldown():
 def test_commit_spends_the_budget_only_on_an_interrupt():
     st = gate()
     t = trig()
-    st.commit(t, score(t, st))          # a digest-routed trigger
+    st.commit(t, score(t, st))  # a digest-routed trigger
     assert st.sent_today == 0
     p0 = trig("expiry.itm_short", "N25000CE", 1.0, Family.EXPIRY)
     st.commit(p0, score(p0, st))

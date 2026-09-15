@@ -6,7 +6,7 @@ means pause on the first try, offline, with no chance of being read as a
 question about the market.
 """
 
-from datetime import UTC, time
+from datetime import UTC, datetime, time
 
 import pytest
 
@@ -139,7 +139,6 @@ def test_a_snooze_time_reads_the_same_in_both_places():
     """Postgres returns timestamps in the server's zone. Rendering one raw put
     'quiet until 05:12' in settings next to a confirmation saying 10:42 — the
     same instant shown two ways, which reads as the desk being confused."""
-    from datetime import datetime
 
     utc = datetime(2026, 9, 15, 5, 12, tzinfo=UTC)  # 10:42 IST
     assert "10:42" in confirm(parse("snooze 2h"), {}, until=utc)

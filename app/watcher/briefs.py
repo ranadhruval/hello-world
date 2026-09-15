@@ -20,11 +20,16 @@ still worth reading, which is why it is built that way round.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.render.templates import WARN, inr, signed
+from app.tools.instruments import InstrumentIndex
 from app.tools.pnl import MarginUtilisation, PortfolioPnl, PositionPnl
 from app.watcher.exposure import Book, build_book
+from app.watcher.schedule import Job
 
 
 @dataclass(frozen=True)
@@ -309,3 +314,87 @@ async def deliver(
         except Exception:
             log.exception("%s failed for user %s; continuing", which, user_id)
     return sent
+
+
+# ---- scheduled jobs ------------------------------------------------
+
+
+def jobs(store, tools_for, index) -> Awaitable[list[Job]]:
+    """Everything the worker's scheduler runs. One place, so a new job is a line
+    here rather than a closure buried in the process entrypoint."""
+    from datetime import date, time
+
+    from app.outbox import idempotency_key
+    from app.tools.instruments import download, read_csv
+    from app.watcher.schedule import Job
+
+    log = logging.getLogger(__name__)
+
+    async def enqueue(user_id: int, which: str, body: str, slots: dict) -> None:
+        today = date.today()
+        await store.enqueue_outbox(
+            user_id,
+            rule_id=which,
+            fingerprint=f"{which}|{today}",
+            idempotency_key=idempotency_key(user_id, which, "daily", today),
+            body=body,
+            route="interrupt",
+            payload=slots,
+        )
+
+    def brief(kind: str, at: time, only_user: int | None = None) -> Job:
+        # The job's name is its slot-ledger key, so a per-user job needs a name
+        # of its own; the *kind* is what selects the renderer.
+        name = kind if only_user is None else f"{kind}:u{only_user}"
+
+        async def run() -> None:
+            count = await deliver(
+                kind,
+                store=store,
+                tools_for=tools_for,
+                index=index,
+                enqueue=enqueue,
+                only_user=only_user,
+            )
+            log.info("%s queued for %d", name, count)
+
+        return Job(name=name, at=at, fn=run, timeout_s=300)
+
+    async def refresh_instruments() -> None:
+        """Rebuild the master before the open. Runs every day, not just trading
+        days, so a holiday edit to the file is still picked up."""
+        path = Path("data/instruments.csv")
+        download(path)
+        fresh = InstrumentIndex(read_csv(path))
+        index.__dict__.update(fresh.__dict__)  # swap in place, keep the reference
+        log.info("instrument master refreshed: %d instruments", len(index))
+
+    async def build() -> list[Job]:
+        # After the close, not at it: the last prints need a moment to settle,
+        # and a wrap quoting a stale close is worse than a late one.
+        out = [
+            Job(
+                "instruments.refresh",
+                time(7, 30),
+                refresh_instruments,
+                trading_days_only=False,
+                timeout_s=600,
+            ),
+            brief(PRE_MARKET, time(8, 45)),
+            brief(POST_CLOSE, time(15, 45)),
+        ]
+        # A user who moved a brief is served by a job of their own and is
+        # skipped by the default one (see deliver). At ten users this is a
+        # handful of jobs; at hundreds the shape to move to is one job that
+        # sweeps by minute, not a scheduler change.
+        for user_id in await store.all_linked_users():
+            prefs = await store.get_prefs(user_id)
+            for kind, column in (
+                (PRE_MARKET, "brief_pre_market"),
+                (POST_CLOSE, "brief_post_close"),
+            ):
+                if prefs.get(column):
+                    out.append(brief(kind, prefs[column], only_user=user_id))
+        return out
+
+    return build()

@@ -51,50 +51,31 @@ class Intent(StrEnum):
     REJECT = "reject"
 
 
-# Intents answered without touching a model.
-FAST_INTENTS = frozenset(
-    {
-        Intent.PORTFOLIO_SUMMARY,
-        Intent.PORTFOLIO_HOLDING,
-        Intent.PORTFOLIO_DAY_CHANGE,
-        Intent.POSITIONS_OPEN,
-        Intent.POSITIONS_DETAIL,
-        Intent.ORDERS_OPEN,
-        Intent.ORDERS_STATUS,
-        Intent.ORDERS_HISTORY,
-        Intent.MARGIN_AVAILABLE,
-        Intent.MARGIN_UTILISATION,
-        Intent.MARKET_QUOTE,
-        Intent.MARKET_INDEX,
-        Intent.MARKET_OHLC,
-        Intent.FNO_CHAIN,
-        Intent.FNO_LEVELS,
-        Intent.FNO_GREEKS,
-        Intent.WATCH_ADD,
-        Intent.WATCH_LIST,
-        Intent.META_LINK,
-        Intent.META_UNLINK,
-        Intent.META_HELP,
-        Intent.META_SETTINGS,
-    }
-)
-
 INDEX_WORDS = r"nifty|sensex|banknifty|bank\s*nifty|finnifty|midcpnifty|bnf|bankex"
 
 FAST_PATTERNS: list[tuple[str, Intent]] = [
     (rf"^\s*(market|markets|indices|index|{INDEX_WORDS})\s*$", Intent.MARKET_INDEX),
-    (r"^\s*(portfolio|pf|holdings?|how am i doing|kitna hua|kaisa chal raha)\s*$",
-     Intent.PORTFOLIO_SUMMARY),
+    (
+        r"^\s*(portfolio|pf|holdings?|how am i doing|kitna hua|kaisa chal raha)\s*$",
+        Intent.PORTFOLIO_SUMMARY,
+    ),
     (r"^\s*(positions?|pos|open positions?)\s*$", Intent.POSITIONS_OPEN),
     (r"^\s*(orders?|pending|open orders?|pending orders?)\s*$", Intent.ORDERS_OPEN),
     (r"^\s*(margin|balance|funds?|kitna balance|kitna margin)\s*$", Intent.MARGIN_AVAILABLE),
-    (r"^\s*(margin (used|utilisation|utilization)|how much margin)\s*\??$",
-     Intent.MARGIN_UTILISATION),
-    (r"^\s*(pnl|p\s*&\s*l|p and l|profit|loss|today'?s pnl|day pnl|aaj ka pnl|"
-     r"mera pnl( kitna( hai)?)?|kitna (fayda|nuksan))\s*\??$", Intent.PORTFOLIO_DAY_CHANGE),
+    (
+        r"^\s*(margin (used|utilisation|utilization)|how much margin)\s*\??$",
+        Intent.MARGIN_UTILISATION,
+    ),
+    (
+        r"^\s*(pnl|p\s*&\s*l|p and l|profit|loss|today'?s pnl|day pnl|aaj ka pnl|"
+        r"mera pnl( kitna( hai)?)?|kitna (fayda|nuksan))\s*\??$",
+        Intent.PORTFOLIO_DAY_CHANGE,
+    ),
     (r"^\s*(did my order fill|order status|filled\??|bhar gaya\??)\s*$", Intent.ORDERS_STATUS),
-    (r"^\s*(what did i trade( today)?|trades?( today)?|kal kya khareeda|aaj kya khareeda)\s*\??$",
-     Intent.ORDERS_HISTORY),
+    (
+        r"^\s*(what did i trade( today)?|trades?( today)?|kal kya khareeda|aaj kya khareeda)\s*\??$",
+        Intent.ORDERS_HISTORY,
+    ),
     (r"^\s*(help|what can you do|commands?|\?)\s*$", Intent.META_HELP),
     (r"^\s*(link|connect|connect (my )?account)\s*$", Intent.META_LINK),
     (r"^\s*(unlink|disconnect|delete my data)\s*$", Intent.META_UNLINK),

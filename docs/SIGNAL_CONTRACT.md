@@ -2,7 +2,7 @@
 
 **For:** the team/agent building the insights generation engine
 **From:** the team building the personalisation and delivery layer
-**Status:** settled. Rulings and rationale in `SIGNAL_CONTRACT_REPLY.md`; this file
+**Status:** settled. Rulings and rationale in `research/SIGNAL_CONTRACT_REPLY.md`; this file
 is the source of truth where the two differ.
 
 **Changed in v0.3:** `market.gap` withdrawal made unambiguous — the reply's A7 row

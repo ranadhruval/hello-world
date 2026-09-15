@@ -1,5 +1,6 @@
 """Notepad, scheduler, incidents, voice, suggestions (B2, B6, B8, B9, B10)."""
 
+import asyncio
 from datetime import datetime, time, timedelta
 
 import pytest
@@ -207,8 +208,6 @@ async def test_a_raising_job_does_not_stop_the_others():
 
 
 async def test_a_hanging_job_times_out_and_is_recorded():
-    import asyncio
-
     async def hang():
         await asyncio.sleep(10)
 

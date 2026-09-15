@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pyotp  # noqa: E402
 from growwapi import GrowwAPI  # noqa: E402
 
-from app.auth.broker import _access_token  # noqa: E402
+from app.auth.broker import access_token  # noqa: E402
 from app.render.templates import inr, signed  # noqa: E402
 from app.tools.instruments import InstrumentIndex, ensure_csv  # noqa: E402
 from app.tools.pnl import (  # noqa: E402
@@ -52,7 +52,7 @@ def connect() -> GrowwAPI:
     if not token or not secret:
         sys.exit("Set TOTP_TOKEN and TOTP_SECRET (from groww.in/trade-api/api-keys)")
     access = GrowwAPI.get_access_token(api_key=token, totp=pyotp.TOTP(secret).now())
-    return GrowwAPI(_access_token(access))
+    return GrowwAPI(access_token(access))
 
 
 def rows(payload, *keys) -> list[dict]:
@@ -69,7 +69,9 @@ def rows(payload, *keys) -> list[dict]:
 
 
 def reconcile_holdings(groww: GrowwAPI, index: InstrumentIndex) -> float:
-    holdings = [Holding.from_api(d) for d in rows(groww.get_holdings_for_user(timeout=10), "holdings")]
+    holdings = [
+        Holding.from_api(d) for d in rows(groww.get_holdings_for_user(timeout=10), "holdings")
+    ]
     if not holdings:
         print("No holdings.\n")
         return 0.0
@@ -89,7 +91,9 @@ def reconcile_holdings(groww: GrowwAPI, index: InstrumentIndex) -> float:
     ltps: dict[str, float] = {}
     batch = list(keys.values())
     for i in range(0, len(batch), 50):  # get_ltp caps at 50 per call
-        ltps.update(groww.get_ltp(exchange_trading_symbols=tuple(batch[i : i + 50]), segment="CASH"))
+        ltps.update(
+            groww.get_ltp(exchange_trading_symbols=tuple(batch[i : i + 50]), segment="CASH")
+        )
 
     print("HOLDINGS")
     print(RULE)
@@ -113,8 +117,10 @@ def reconcile_holdings(groww: GrowwAPI, index: InstrumentIndex) -> float:
         )
 
     print(RULE)
-    print(f"{'TOTAL':<14}{'':>8}{'':>12}{'':>12}{inr(total_value):>16}"
-          f"{signed(total_value - total_cost):>14}")
+    print(
+        f"{'TOTAL':<14}{'':>8}{'':>12}{'':>12}{inr(total_value):>16}"
+        f"{signed(total_value - total_cost):>14}"
+    )
     if unresolved:
         print(f"\n  ! not in the instrument master: {', '.join(unresolved)}")
     print(f"\n  >> Compare {inr(total_value)} against the app's portfolio value.")
@@ -149,9 +155,9 @@ def reconcile_positions(groww: GrowwAPI) -> None:
         key = f"{p.exchange or 'NSE'}_{p.trading_symbol}"
         try:
             ltps[key] = float(
-                groww.get_ltp(
-                    exchange_trading_symbols=(key,), segment=p.segment or "FNO"
-                ).get(key, 0.0)
+                groww.get_ltp(exchange_trading_symbols=(key,), segment=p.segment or "FNO").get(
+                    key, 0.0
+                )
             )
         except Exception:
             ltps[key] = 0.0
@@ -204,10 +210,12 @@ def report_basis(live: list[Position], ltps: dict[str, float]) -> None:
         votes.append((p.trading_symbol, "AVERAGE" if per_unit_err <= notional_err else "NOTIONAL"))
 
     if not votes:
-        print("  >> Cannot tell which basis convention applies: no position with a\n"
-              "     quantity above 1 and a live price. Both columns above are\n"
-              "     identical for quantity-1 legs. DEFAULT_BASIS stays unverified\n"
-              "     until you hold a multi-unit F&O position.\n")
+        print(
+            "  >> Cannot tell which basis convention applies: no position with a\n"
+            "     quantity above 1 and a live price. Both columns above are\n"
+            "     identical for quantity-1 legs. DEFAULT_BASIS stays unverified\n"
+            "     until you hold a multi-unit F&O position.\n"
+        )
         return
 
     verdicts = {v for _, v in votes}
@@ -225,8 +233,10 @@ def report_basis(live: list[Position], ltps: dict[str, float]) -> None:
         print(f"     app/tools/pnl.py:DEFAULT_BASIS is already {current}. Nothing to change.\n")
     else:
         print(f"     DEFAULT_BASIS is currently {current} — change it to Basis.{verdict}.")
-        print("     Every F&O number reported so far was wrong by a factor of the\n"
-              "     quantity, so re-check anything you relied on.\n")
+        print(
+            "     Every F&O number reported so far was wrong by a factor of the\n"
+            "     quantity, so re-check anything you relied on.\n"
+        )
 
 
 def reconcile_margin(groww: GrowwAPI) -> None:

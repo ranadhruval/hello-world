@@ -30,7 +30,9 @@ results: list[tuple[str, str, str]] = []
 
 def check(name: str, status: str, detail: str = "") -> str:
     results.append((name, status, detail))
-    print(f"  {COLOUR[status]}{status}{RESET}  {name}" + (f"  {DIM}{detail}{RESET}" if detail else ""))
+    print(
+        f"  {COLOUR[status]}{status}{RESET}  {name}" + (f"  {DIM}{detail}{RESET}" if detail else "")
+    )
     return status
 
 
@@ -89,10 +91,15 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
     # ---- dependencies ----
     missing = []
     for mod, pkg in [
-        ("growwapi", "growwapi"), ("pyotp", "pyotp"), ("pydantic", "pydantic"),
-        ("pydantic_settings", "pydantic-settings"), ("httpx", "httpx"),
-        ("psycopg", "psycopg[binary]"), ("redis", "redis"),
-        ("cryptography", "cryptography"), ("fastapi", "fastapi"),
+        ("growwapi", "growwapi"),
+        ("pyotp", "pyotp"),
+        ("pydantic", "pydantic"),
+        ("pydantic_settings", "pydantic-settings"),
+        ("httpx", "httpx"),
+        ("psycopg", "psycopg[binary]"),
+        ("redis", "redis"),
+        ("cryptography", "cryptography"),
+        ("fastapi", "fastapi"),
     ]:
         try:
             __import__(mod)
@@ -119,7 +126,11 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
         check(".env", FAIL, "cp .env.example .env && chmod 600 .env")
     else:
         mode = oct((ROOT / ".env").stat().st_mode)[-3:]
-        check(".env", OK if mode == "600" else WARN, f"mode {mode}" + ("" if mode == "600" else " — chmod 600 .env"))
+        check(
+            ".env",
+            OK if mode == "600" else WARN,
+            f"mode {mode}" + ("" if mode == "600" else " — chmod 600 .env"),
+        )
 
     from app.config import settings  # noqa: E402
 
@@ -149,15 +160,21 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
     # and Redis from Homebrew has no Docker and should not be told to install it.
     if not (redis_up and pg_up):
         if not shutil.which("docker"):
-            check("docker", WARN,
-                  "not installed — either `brew install --cask docker`, or run postgres "
-                  "and redis from Homebrew (see docs/RUNBOOK.md §3)")
+            check(
+                "docker",
+                WARN,
+                "not installed — either `brew install --cask docker`, or run postgres "
+                "and redis from Homebrew (see docs/QUICKSTART.md §4)",
+            )
         elif subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode:
             # The distinction that matters: telling someone to run
             # `docker compose up -d` against a stopped daemon is a loop.
-            check("docker", FAIL,
-                  "Docker Desktop is installed but not running — `open -a Docker`, "
-                  "wait for the whale icon, then retry")
+            check(
+                "docker",
+                FAIL,
+                "Docker Desktop is installed but not running — `open -a Docker`, "
+                "wait for the whale icon, then retry",
+            )
         else:
             check("docker", OK, "daemon running")
 
@@ -190,8 +207,9 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
         check("instrument master", FAIL, "make instruments-download")
     else:
         mb = csv.stat().st_size / 1e6
-        age_h = (Path(csv).stat().st_mtime and
-                 (__import__("time").time() - csv.stat().st_mtime) / 3600)
+        age_h = (
+            Path(csv).stat().st_mtime and (__import__("time").time() - csv.stat().st_mtime) / 3600
+        )
         status = OK if mb > 5 else FAIL
         note = f"{mb:.0f}MB, {age_h:.0f}h old"
         if status is OK and age_h > 48:
@@ -205,8 +223,11 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
 
             r = httpx.get(f"{cfg.baileys_url}/health", timeout=3)
             connected = r.json().get("connected")
-            check("whatsapp adapter", OK if connected else WARN,
-                  "connected" if connected else "running but not paired — scan the QR")
+            check(
+                "whatsapp adapter",
+                OK if connected else WARN,
+                "connected" if connected else "running but not paired — scan the QR",
+            )
         except Exception as exc:
             check("whatsapp adapter", WARN, f"port open but /health failed: {exc}")
     else:
@@ -221,9 +242,12 @@ def main() -> int:  # noqa: C901 - a flat checklist reads better than nesting
     if os.environ.get("TOTP_TOKEN") and os.environ.get("TOTP_SECRET"):
         check("groww creds in env", OK, "run scripts/authcheck.py to verify them")
     else:
-        check("groww creds in env", WARN,
-              "TOTP_TOKEN/TOTP_SECRET unset — only needed for authcheck and reconcile, "
-              "not for the worker (it reads them from the database)")
+        check(
+            "groww creds in env",
+            WARN,
+            "TOTP_TOKEN/TOTP_SECRET unset — only needed for authcheck and reconcile, "
+            "not for the worker (it reads them from the database)",
+        )
 
     # ---- summary ----
     failed = [n for n, s, _ in results if s is FAIL]

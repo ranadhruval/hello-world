@@ -1,9 +1,11 @@
+import base64
+import time
 from datetime import datetime, timedelta
 
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from app.auth.broker import _access_token, next_0605_ist
+from app.auth.broker import access_token, next_0605_ist
 from app.auth.crypto import Crypto, generate_key
 from app.config import IST, redact
 
@@ -35,8 +37,6 @@ def test_tampered_ciphertext_is_rejected():
 
 
 def test_short_key_rejected():
-    import base64
-
     with pytest.raises(ValueError):
         Crypto(base64.b64encode(b"tooshort").decode())
 
@@ -61,8 +61,6 @@ def test_next_0605_at_the_boundary_rolls_forward():
 
 def test_token_cache_never_outlives_the_daily_expiry():
     """Access tokens die around 06:00 IST, so a 6h TTL must be clipped."""
-    import time
-
     now = datetime.now(IST)
     six_hours_out = time.time() + 6 * 3600
     effective = min(six_hours_out, next_0605_ist(now))
@@ -84,14 +82,14 @@ def test_log_redaction(raw, expected):
 
 def test_access_token_accepts_both_shapes():
     """growwapi 1.5.0 annotates -> dict but returns the bare token string."""
-    assert _access_token("raw-token") == "raw-token"
-    assert _access_token({"token": "wrapped"}) == "wrapped"
-    assert _access_token({"access_token": "wrapped"}) == "wrapped"
+    assert access_token("raw-token") == "raw-token"
+    assert access_token({"token": "wrapped"}) == "wrapped"
+    assert access_token({"access_token": "wrapped"}) == "wrapped"
 
 
 def test_access_token_rejects_nonsense():
     with pytest.raises(TypeError):
-        _access_token(12345)
+        access_token(12345)
 
 
 def test_expiry_ttl_is_bounded(monkeypatch):

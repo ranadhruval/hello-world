@@ -122,7 +122,7 @@ class TokenBroker:
                 await self._store.set_credential_state(user_id, "failing")
             raise
 
-        client = GrowwAPI(_access_token(token))
+        client = GrowwAPI(access_token(token))
         expires_at = min(time.time() + cfg.token_ttl_seconds, next_0605_ist())
         self._clients[user_id] = _Cached(client, expires_at)
         await self._store.log_token_mint(user_id, ok=True)
@@ -131,7 +131,7 @@ class TokenBroker:
         return client
 
 
-def _access_token(token) -> str:
+def access_token(token) -> str:
     """growwapi annotates get_access_token as -> dict but returns response['token'].
 
     The annotation is wrong as of growwapi 1.5.0. Accept either shape so a

@@ -23,7 +23,7 @@ from datetime import datetime
 import pytest
 
 from app.config import IST
-from app.tools.pnl import HoldingPnl, PortfolioPnl, PositionPnl
+from app.tools.pnl import HoldingPnl, MarginUtilisation, PortfolioPnl, PositionPnl
 from app.watcher.exposure import build_book
 from app.watcher.gate import GateState, Route, score
 from app.watcher.rules import Context, evaluate
@@ -96,8 +96,6 @@ def route_for(triggers, b, *, sent_today=0, confluence=None):
 def test_the_protective_item_reaches_you():
     """The margin band worsening is the evening's 'boss email': consequential,
     time-bounded, and a miss costs money. It must not wait for the digest."""
-    from app.tools.pnl import MarginUtilisation
-
     b, positions = book()
     ctx = Context(
         book=b,
@@ -150,8 +148,6 @@ def test_the_material_but_unurgent_item_waits():
 
 def evening():
     """All three at once, routed against one gate state — the real test."""
-    from app.tools.pnl import MarginUtilisation
-
     b, positions = book()
     routes: dict[str, Route] = {}
     st = GateState(now=EVENING, book=b, minutes_to_close=40)
@@ -215,8 +211,6 @@ def test_the_negligible_item_never_appears_at_all():
 @pytest.mark.parametrize("sent_today,expected", [(0, Route.INTERRUPT), (9, Route.INTERRUPT)])
 def test_a_spent_budget_does_not_suppress_the_protective_item(sent_today, expected):
     """Budget exhaustion must not be a way to miss a margin call."""
-    from app.tools.pnl import MarginUtilisation
-
     b, positions = book()
     ctx = Context(
         book=b,
@@ -232,8 +226,6 @@ def test_a_spent_budget_does_not_suppress_the_protective_item(sent_today, expect
 
 def test_quiet_hours_do_not_swallow_the_protective_item():
     """An evening test that runs into the night still has to reach you."""
-    from app.tools.pnl import MarginUtilisation
-
     b, positions = book()
     ctx = Context(
         book=b,

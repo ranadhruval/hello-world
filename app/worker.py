@@ -381,7 +381,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     if not await channel.health():
         log.warning("adapter at %s is not connected — is it running?", cfg.baileys_url)
 
-    # One process, four tasks. A separate watcher process is the right shape
+    # One process, three tasks. A separate watcher process is the right shape
     # once a live market feed contends for the executor that GrowwTools uses,
     # but with signals arriving over poll and a handful of users it would be
     # two deployables and a token-sharing problem bought for nothing.
@@ -389,7 +389,6 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         consume(redis, worker),
         _drain_outbox(store, channel),
         _run_schedule(store, index, tools_for),
-        _refresh_instruments_daily(index),
     )
 
 
@@ -407,96 +406,16 @@ async def _drain_outbox(store, channel) -> None:  # pragma: no cover - process l
 
 
 async def _run_schedule(store, index, tools_for) -> None:  # pragma: no cover - process loop
-    """The bookend briefs."""
-    from datetime import date, time
-
+    """Briefs and the nightly instrument refresh, on the slot-ledger scheduler."""
     from app.market.calendar import assert_holidays_cover, now_ist
-    from app.outbox import idempotency_key
-    from app.watcher.briefs import POST_CLOSE, PRE_MARKET, deliver
-    from app.watcher.schedule import DailyScheduler, Job
+    from app.watcher.briefs import jobs
+    from app.watcher.schedule import DailyScheduler
 
     # A missing holiday entry reads as "every weekday is a trading day", which
     # would send a market brief on Diwali. Refuse to schedule rather than be
     # silently wrong about whether the market is open.
     assert_holidays_cover(now_ist().year)
-
-    async def enqueue(user_id: int, which: str, body: str, slots: dict) -> None:
-        today = date.today()
-        await store.enqueue_outbox(
-            user_id,
-            rule_id=which,
-            fingerprint=f"{which}|{today}",
-            idempotency_key=idempotency_key(user_id, which, "daily", today),
-            body=body,
-            route="interrupt",
-            payload=slots,
-        )
-
-    def job(kind: str, at: time, only_user: int | None = None) -> Job:
-        # The job's name is its slot-ledger key, so a per-user job needs a name
-        # of its own; the *kind* is what selects the renderer.
-        name = kind if only_user is None else f"{kind}:u{only_user}"
-
-        async def run() -> None:
-            count = await deliver(
-                kind,
-                store=store,
-                tools_for=tools_for,
-                index=index,
-                enqueue=enqueue,
-                only_user=only_user,
-            )
-            log.info("%s queued for %d", name, count)
-
-        return Job(name=name, at=at, fn=run, timeout_s=300)
-
-    async def jobs() -> list[Job]:
-        """Two default jobs, plus one for each user who moved their time.
-
-        A user with a custom time is excluded from the default job by their own
-        pref, so nobody gets two. At ten users this is a handful of jobs; if it
-        ever became hundreds, the shape to move to is one job that sweeps by
-        minute — not a scheduler change.
-        """
-        out = [job(PRE_MARKET, time(8, 45)), job(POST_CLOSE, time(15, 45))]
-        for user_id in await store.all_linked_users():
-            prefs = await store.get_prefs(user_id)
-            for kind, column in (
-                (PRE_MARKET, "brief_pre_market"),
-                (POST_CLOSE, "brief_post_close"),
-            ):
-                at = prefs.get(column)
-                if at:
-                    out.append(job(kind, at, only_user=user_id))
-        return out
-
-    # After the close, not at it: the last prints need a moment to settle, and
-    # a wrap quoting a stale close is worse than a late one.
-    scheduler = DailyScheduler(store, await jobs())
-    await scheduler.run()
-
-
-async def _refresh_instruments_daily(index: InstrumentIndex) -> None:  # pragma: no cover
-    """Rebuild the master at 07:30 IST (spec §23)."""
-    from datetime import datetime, timedelta
-
-    from app.config import IST
-    from app.tools.instruments import download, read_csv
-
-    path = FilePath("data/instruments.csv")
-    while True:
-        now = datetime.now(IST)
-        target = now.replace(hour=7, minute=30, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        await asyncio.sleep((target - now).total_seconds())
-        try:
-            download(path)
-            fresh = InstrumentIndex(read_csv(path))
-            index.__dict__.update(fresh.__dict__)  # swap in place, keep the reference
-            log.info("instrument master refreshed: %d instruments", len(index))
-        except Exception:
-            log.exception("instrument refresh failed; keeping yesterday's master")
+    await DailyScheduler(store, await jobs(store, tools_for, index)).run()
 
 
 if __name__ == "__main__":  # pragma: no cover

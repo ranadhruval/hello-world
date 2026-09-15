@@ -36,7 +36,6 @@ T = TypeVar("T")
 
 LIVE = "live_data"
 NON_TRADING = "non_trading"
-ORDERS = "orders"
 
 
 class ToolError(RuntimeError):
@@ -66,7 +65,10 @@ class GrowwTools:
 
     async def get_holdings(self) -> list[Holding]:
         raw = await self._call(
-            NON_TRADING, settings().ttl_holdings, "holdings", lambda c: c.get_holdings_for_user(timeout=5)
+            NON_TRADING,
+            settings().ttl_holdings,
+            "holdings",
+            lambda c: c.get_holdings_for_user(timeout=5),
         )
         return [Holding.from_api(d) for d in _rows(raw, "holdings")]
 
@@ -93,7 +95,10 @@ class GrowwTools:
 
     async def get_margin(self) -> MarginState:
         raw = await self._call(
-            NON_TRADING, settings().ttl_margin, "margin", lambda c: c.get_available_margin_details(timeout=5)
+            NON_TRADING,
+            settings().ttl_margin,
+            "margin",
+            lambda c: c.get_available_margin_details(timeout=5),
         )
         return MarginState.from_api(raw if isinstance(raw, dict) else {})
 

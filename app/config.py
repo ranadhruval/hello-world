@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import re
+from datetime import datetime
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,15 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 IST = ZoneInfo("Asia/Kolkata")
+
+
+def to_ist(ts: datetime | None) -> datetime | None:
+    """Postgres hands timestamptz back in the server's zone, and anything naive
+    predates that or came from a test. One place to coerce, so no two renderers
+    can show the same instant as two different times."""
+    if ts is None:
+        return None
+    return ts.astimezone(IST) if ts.tzinfo else ts.replace(tzinfo=IST)
 
 
 class Settings(BaseSettings):
@@ -22,11 +32,7 @@ class Settings(BaseSettings):
 
     public_base_url: str = "http://localhost:8000"
 
-    channel: str = "console"
     baileys_url: str = "http://localhost:3001"
-
-    operator_wa_id: str = ""
-    anthropic_api_key: str = ""
 
     # Tool cache TTLs in seconds (spec §5.2). Tuned so the Live Data group
     # (10/s, 300/min) stays under budget at ~30 users.
@@ -39,7 +45,6 @@ class Settings(BaseSettings):
     ttl_ohlc: int = 30
     ttl_option_chain: int = 15
     ttl_greeks: int = 15
-    ttl_candles: int = 300
 
     # Token broker (spec §4.3)
     token_ttl_seconds: int = 6 * 3600
@@ -48,8 +53,6 @@ class Settings(BaseSettings):
     # Orchestrator (spec §2.2)
     debounce_ms: int = 1500
     typing_after_ms: int = 1200
-    llm_wall_clock_s: float = 8.0
-    llm_max_iterations: int = 4
 
     link_ttl_seconds: int = 600
 
@@ -69,7 +72,6 @@ def settings() -> Settings:
 
 
 BATCH_LIMIT = 50  # get_ltp / get_ohlc accept at most 50 instruments per call
-FEED_SUBSCRIPTION_LIMIT = 1000
 
 # Rate limits are per type-group, shared across every API in the group (spec §5.5).
 RATE_LIMITS: dict[str, tuple[int, int]] = {
@@ -78,10 +80,6 @@ RATE_LIMITS: dict[str, tuple[int, int]] = {
     "live_data": (10, 300),
     "non_trading": (20, 500),
 }
-
-MAX_WHATSAPP_CHARS = 4096
-TARGET_WHATSAPP_CHARS = 500
-
 
 _TOKEN_SHAPE = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
 

@@ -14,11 +14,11 @@ import hmac
 import logging
 
 import pyotp
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from growwapi import GrowwAPI
 
-from app.auth.broker import _access_token
+from app.auth.broker import access_token
 from app.auth.crypto import Crypto
 from app.config import settings
 from app.store.db import Store
@@ -79,7 +79,7 @@ async def link_submit(
             api_key=totp_token.strip(),
             totp=pyotp.TOTP(totp_secret.strip()).now(),
         )
-        client = GrowwAPI(_access_token(access))
+        client = GrowwAPI(access_token(access))
         await asyncio.to_thread(client.get_holdings_for_user, timeout=5)
         fingerprint = await asyncio.to_thread(_account_fingerprint, client)
     except Exception as exc:
@@ -133,17 +133,6 @@ def _account_fingerprint(client: GrowwAPI) -> str:
         log.warning("profile carried no known account key; merge unavailable for this link")
         return ""
     return hmac.new(settings().link_secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
-
-
-@app.post("/webhook/inbound")
-async def inbound(request: Request) -> JSONResponse:
-    """Receives normalised messages from the channel adapter."""
-    payload = await request.json()
-    if not payload.get("wa_id"):
-        raise HTTPException(status_code=400, detail="wa_id required")
-    # The adapter publishes to the Redis stream the worker consumes; this
-    # endpoint exists so the Cloud API migration has a home.
-    return JSONResponse({"accepted": True})
 
 
 _STYLE = """

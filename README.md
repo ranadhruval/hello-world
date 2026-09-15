@@ -50,8 +50,8 @@ app/
 └── repl.py              drives the whole pipeline over stdin
 ```
 
-Not built yet: the LLM path (`agent/`), charts, the Baileys Node process, and
-all of Phase 2 (`watcher/`).
+Not built yet: the LLM path (`agent/`), charts, and the intraday signal poll that
+feeds `watcher/rules.py`. Briefs, the outbox and the scheduler are live.
 
 ## Why P&L is computed here and not read from Groww
 
@@ -75,7 +75,7 @@ bite:
   **unresolved until you run the reconciliation**.
 
 ```bash
-pip install growwapi pyotp pydantic pydantic-settings httpx   # or: make deps-reconcile
+pip install -e .
 
 export TOTP_TOKEN='your-api-key'
 export TOTP_SECRET='your-totp-secret'
@@ -131,7 +131,7 @@ Lot sizes come from the master and only from the master. NIFTY is 65 today.
 
 ## Running it
 
-**Full setup, fresh clone to texting your own number: [docs/RUNBOOK.md](docs/RUNBOOK.md).**
+**Full setup, fresh clone to texting your own number: [docs/QUICKSTART.md](docs/QUICKSTART.md).**
 `python scripts/doctor.py` checks every prerequisite and prints the command
 that fixes each failure.
 
@@ -141,7 +141,7 @@ python -m app.auth.crypto >> .env        # generates CRED_KEY
 
 make up            # postgres, redis, api, worker
 make instruments   # seed the instrument master
-make test          # 176 tests
+make test          # 442 tests
 make eval          # golden set: intent accuracy, numeric exactness
 ```
 
