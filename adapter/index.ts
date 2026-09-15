@@ -27,6 +27,14 @@ const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379'
 const STREAM = process.env.INBOUND_STREAM ?? 'inbound'
 const SESSION_DIR = process.env.SESSION_DIR ?? './session'
 const STREAM_MAXLEN = 10_000
+// Where a reply is addressed. 'echo' answers on the exact JID the message
+// arrived on, which is where WhatsApp established the encryption session with
+// this contact. 'phone' resolves a @lid chat to the phone number behind it.
+// Echo is the default because addressing the same person by two identities
+// makes libsignal tear down and rebuild the session -- the "Closing open
+// session in favor of incoming prekey bundle" line -- and a message encrypted
+// against the losing session is accepted here and never renders there.
+const REPLY_TO = process.env.REPLY_TO === 'phone' ? 'phone' : 'echo'
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' })
 const redis = createClient({ url: REDIS_URL })
@@ -117,8 +125,9 @@ async function rememberLid(jid: string, senderPn?: string | null): Promise<void>
   }
 }
 
-/** The address to actually send to: a phone JID whenever one is known. */
+/** The address to actually send to. See REPLY_TO. */
 async function deliverableJid(jid: string): Promise<string> {
+  if (REPLY_TO === 'echo') return jid
   if (!jid.endsWith('@lid')) return jid
   try {
     const pn = await redis.hGet(LID_MAP, jidToWaId(jid))
@@ -190,7 +199,7 @@ async function start(): Promise<void> {
 
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
   const { version } = await fetchLatestBaileysVersion()
-  log.info({ version, gen }, 'starting baileys')
+  log.info({ version, gen, replyTo: REPLY_TO }, 'starting baileys')
 
   const current = makeWASocket({
     version,
