@@ -208,6 +208,12 @@ app/
 ├── watcher/schedule.py  159  slot-ledger scheduler: at-most-once across a crash
 ├── watcher/shadow.py    176  run everything, send nothing, log to a local file
 │
+├── ── open questions (docs/INTEGRATE_R2D2.md) ──────────────────
+├── agent/r2d2.py        240  R2D2 /response: streams for liveness, takes the final object
+├── agent/answer.py      130  I1 + compliance + shape, or withhold and fall back
+├── agent/shape.py        70  markdown → WhatsApp, never cutting a number in half
+├── agent/context.py      40  symbols and history, never a credential
+│
 ├── ── built, not yet wired (await the signal poll) ─────────────
 ├── watcher/notepad.py    62  per-job cursors with byte caps
 ├── watcher/suggestions.py 144  "want me to watch TITAN?" — consent-first, capped at 5
@@ -306,5 +312,6 @@ README less.
 |---|---|
 | [`docs/GR2_MEMO.md`](docs/GR2_MEMO.md) | Two pages: the product calls and engineering decisions, for someone with no context |
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | Setup, verification, what breaks and why |
+| [`docs/INTEGRATE_R2D2.md`](docs/INTEGRATE_R2D2.md) | **Wiring open questions to R2D2's `/response`.** Read before touching `app/agent/` |
 | [`docs/SIGNAL_CONTRACT.md`](docs/SIGNAL_CONTRACT.md) | The negotiated contract with the signal engine (v0.3) |
 | [`docs/research/`](docs/research/) | How the transfer plan, the scorecard study and the contract negotiation went. Reference, not living docs |

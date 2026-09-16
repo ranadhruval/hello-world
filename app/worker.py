@@ -19,6 +19,7 @@ from pathlib import Path as FilePath
 
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from app.agent.context import build_context
 from app.channel.base import Channel, InboundMessage, OutboundMessage
 from app.channel.identity import canonical_wa_id
 from app.config import IST, settings
@@ -29,6 +30,9 @@ from app.router.prefs import parse as parse_pref
 from app.tools.instruments import InstrumentIndex
 
 log = logging.getLogger(__name__)
+
+# WhatsApp drops a typing indicator after about ten seconds.
+TYPING_REFRESH_S = 8
 
 
 class Deduper:
@@ -117,12 +121,21 @@ class Worker:
         store=None,
         crypto=None,
         deduper: Deduper | None = None,
+        answerer=None,
+        identity_for=None,
     ) -> None:
         self._channel = channel
         self._index = index
         self._desk_for = desk_for  # (wa_id) -> Desk | None when unlinked
         self._store = store
         self._crypto = crypto
+        # None until R2D2_BASE_URL is set. While it is None every Path.LLM
+        # message takes exactly the route it takes today.
+        self._answerer = answerer
+        # (user_id) -> the Groww account id R2D2 keys on, or None. GR-2 stores
+        # only an HMAC of that id (app/main.py), so this is read at request
+        # time and never persisted. See docs/INTEGRATE_R2D2.md.
+        self._identity_for = identity_for
         self._dedupe = deduper or Deduper()
         self._debounce = Debouncer(settings().debounce_ms, self._process)
 
@@ -143,10 +156,18 @@ class Worker:
             await self._channel.typing(msg.wa_id, False)
 
     async def _typing_after(self, wa_id: str) -> None:
-        """Only show typing once the answer is visibly slow (spec §3.4)."""
+        """Show typing once the answer is visibly slow, and keep showing it.
+
+        WhatsApp expires a typing indicator after roughly ten seconds. Sending
+        it once was fine when every answer was a template; an agentic call over
+        MCP tools can run half a minute, and an indicator that stops halfway
+        reads as a bot that died rather than one that is working.
+        """
         try:
             await asyncio.sleep(settings().typing_after_ms / 1000)
-            await self._channel.typing(wa_id, True)
+            while True:
+                await self._channel.typing(wa_id, True)
+                await asyncio.sleep(TYPING_REFRESH_S)
         except asyncio.CancelledError:
             pass
 
@@ -165,11 +186,18 @@ class Worker:
             out = await self._account_intent(route, msg.wa_id)
         if out is None:
             desk = await self._desk_for(msg.wa_id)
-            out = (
-                await desk.handle(route, msg.wa_id)
-                if desk is not None
-                else await self._onboarding(msg.wa_id)
-            )
+            if desk is None:
+                out = await self._onboarding(msg.wa_id)
+            else:
+                # An open question goes to R2D2 when one is configured. It
+                # returns None whenever the answer is not fit to send, and the
+                # desk's deterministic reply is what the user gets instead --
+                # so a missing, slow or unverifiable answer degrades to
+                # today's behaviour rather than to an error.
+                if route.path is Path.LLM and self._answerer is not None:
+                    out = await self._ask(route, msg)
+                if out is None:
+                    out = await desk.handle(route, msg.wa_id)
 
         # Reply to the address the message arrived on. One place, so no path
         # can forget and fall back to a rebuilt JID.
@@ -187,6 +215,23 @@ class Worker:
             )
             await self._store.log_message(None, "out", out.text, channel_msg_id)
             await self._store.log_trace(in_id, str(route.path), str(route.intent))
+
+    async def _ask(self, route, msg: InboundMessage) -> OutboundMessage | None:
+        """Put an open question to R2D2. None means 'use the typed reply'."""
+        user_id = await self._store.user_id_for(msg.wa_id) if self._store else None
+        recent = (
+            await self._store.recent_messages(user_id)
+            if self._store and user_id and hasattr(self._store, "recent_messages")
+            else []
+        )
+        identity = None
+        if self._identity_for is not None and user_id is not None:
+            try:
+                identity = await self._identity_for(user_id)
+            except Exception:  # noqa: BLE001 - identity is a nicety, not a gate
+                log.warning("could not resolve a Groww identity for R2D2", exc_info=True)
+        context = build_context(groww_user_id=identity, recent=recent)
+        return await self._answerer.reply(route.query, wa_id=msg.wa_id, context=context)
 
     async def _pref_command(self, text: str, wa_id: str) -> OutboundMessage | None:
         """Handle pause / resume / snooze / brief-time. None if not one."""
@@ -381,7 +426,36 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             desks[user_id] = Desk(await tools_for(user_id), index)
         return desks[user_id]
 
-    worker = Worker(channel, index, desk_for, store=store, crypto=crypto, deduper=Deduper(redis))
+    # R2D2 answers the open questions the templates cannot. Constructed only
+    # when it is configured, so an unset base URL leaves the worker exactly as
+    # it was: Path.LLM keeps falling through to the desk's redirect line.
+    answerer = None
+    if cfg.r2d2_base_url:
+        from app.agent.answer import Answerer
+        from app.agent.r2d2 import R2D2Client
+
+        answerer = Answerer(
+            R2D2Client(
+                cfg.r2d2_base_url,
+                cfg.r2d2_api_key,
+                auth_header=cfg.r2d2_auth_header,
+                auth_scheme=cfg.r2d2_auth_scheme,
+                timeout_s=cfg.r2d2_timeout_s,
+                stream=cfg.r2d2_stream,
+            ),
+            strict_numbers=cfg.r2d2_strict_numbers,
+        )
+        log.info("R2D2 at %s (stream=%s)", cfg.r2d2_base_url, cfg.r2d2_stream)
+
+    worker = Worker(
+        channel,
+        index,
+        desk_for,
+        store=store,
+        crypto=crypto,
+        deduper=Deduper(redis),
+        answerer=answerer,
+    )
 
     if not await channel.health():
         log.warning("adapter at %s is not connected — is it running?", cfg.baileys_url)

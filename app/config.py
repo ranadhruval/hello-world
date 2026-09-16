@@ -56,6 +56,24 @@ class Settings(BaseSettings):
 
     link_ttl_seconds: int = 600
 
+    # --- R2D2 (the GR-1 harness) -------------------------------------
+    # Open questions route to Path.LLM and, with r2d2_base_url unset, get the
+    # deterministic redirect line exactly as they do today. Setting it is the
+    # only switch: nothing else in the worker changes behaviour.
+    r2d2_base_url: str = ""
+    r2d2_api_key: str = ""
+    r2d2_auth_header: str = "Authorization"
+    r2d2_auth_scheme: str = "Bearer"
+    # An agentic loop over MCP tools is slow by nature. Generous on purpose;
+    # the typing indicator is refreshed for the whole wait.
+    r2d2_timeout_s: float = 45.0
+    # Streaming is consumed for liveness only -- WhatsApp gets one message
+    # either way. False sends a single blocking POST instead.
+    r2d2_stream: bool = True
+    # I1: every figure must trace to a tool result. False sends answers with
+    # untraceable numbers and logs each one. Single-operator debugging only.
+    r2d2_strict_numbers: bool = True
+
     @field_validator("cred_key")
     @classmethod
     def _validate_cred_key(cls, v: str) -> str:

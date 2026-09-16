@@ -644,6 +644,20 @@ class Store:
             (user_id, direction, channel_msg_id, text, intent, latency_ms),
         )["id"]
 
+    async def recent_messages(self, user_id: int, n: int = 6) -> list[dict]:
+        """The last few turns, oldest first, for conversational context.
+
+        Alert bodies are included: a reply to an alert is a continuation of it,
+        and an answering engine that cannot see what was just pushed will
+        contradict it.
+        """
+        rows = self._all(
+            "SELECT direction, text, intent, created_at FROM messages "
+            "WHERE user_id = %s AND text IS NOT NULL ORDER BY created_at DESC LIMIT %s",
+            (user_id, n),
+        )
+        return list(reversed(rows))
+
     async def log_trace(
         self, message_id: int, path: str, intent: str, tool_calls=None, error: str | None = None
     ) -> None:

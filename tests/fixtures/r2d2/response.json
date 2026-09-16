@@ -1,0 +1,20 @@
+{
+  "response": "TITAN is down 3.2% today at ₹3,090, on volume about twice its weekly average. Your holding of 40 shares is worth ₹1,23,600, so the move costs you ₹4,080 on the day.",
+  "tools_called": [
+    {
+      "name": "get_quote",
+      "ms": 210,
+      "output": {"trading_symbol": "TITAN", "last_price": 3090, "day_change_perc": -3.2}
+    },
+    {
+      "name": "get_holdings",
+      "ms": 180,
+      "output": {"holdings": [{"trading_symbol": "TITAN", "quantity": 40, "current_value": 123600, "day_change": -4080}]}
+    },
+    {
+      "name": "get_volume",
+      "ms": 140,
+      "output": {"volume_ratio": 2}
+    }
+  ]
+}
